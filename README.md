@@ -7,9 +7,9 @@
 点时信号 · 漂移后换手 · PandaData · 可审计输出
 
 [![CI](https://github.com/lavine888/skill-shortterm-mean-reversal/actions/workflows/validate.yml/badge.svg)](https://github.com/lavine888/skill-shortterm-mean-reversal/actions/workflows/validate.yml)
-[![Version](https://img.shields.io/badge/version-0.6.0-2563EB)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.7.0-2563EB)](./CHANGELOG.md)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-40%20passed-2E7D32)](./tests)
+[![Tests](https://img.shields.io/badge/tests-47%20passed-2E7D32)](./tests)
 [![PandaData](https://img.shields.io/badge/PandaData-0.0.12-0F766E)](./VALIDATION.md)
 [![License](https://img.shields.io/badge/license-GPL--3.0-4B5563)](./LICENSE)
 
@@ -83,8 +83,8 @@ flowchart LR
 <tr><td>完整非重叠期间</td><td><strong>48</strong></td></tr>
 <tr><td>远期收益覆盖率</td><td><strong>99.998%</strong></td></tr>
 <tr><td>Rank IC 覆盖率</td><td><strong>99.976%</strong></td></tr>
-<tr><td>本地测试</td><td><strong>40 passed</strong></td></tr>
-<tr><td>0.6.0 严格全市场执行</td><td><strong>首期 9 个退出阻断，fail-closed</strong></td></tr>
+<tr><td>本地测试</td><td><strong>47 passed</strong></td></tr>
+<tr><td>0.7.0 全市场逐日检查点</td><td><strong>113 日 / 605 次受限退出尝试</strong></td></tr>
 </table>
 
 ### 2024 历史研究快照（schema 3）
@@ -99,9 +99,9 @@ flowchart LR
 | 最大回撤 | `-6.17%` |
 | 平均 Rank IC | `0.0444` |
 
-这是一年期、未建模方向性涨跌停成交的历史研究结果，不是当前严格执行结果。0.6.0 使用官方日历和日频交易状态复核时，第一期即出现 1 个多头跌停无法卖出、8 个空头涨停无法回补，运行按设计终止。上表的 `24.59%` 不得解释为可执行收益。
+这是一年期、未建模方向性涨跌停成交的历史研究结果，不是当前严格执行结果。0.7.0 已使用逐日 NAV 携带并重试普通受限退出；全年运行最终在 `600306.SH` 连续停牌至退市、此后缺少可验证结算价时停止。上表的 `24.59%` 不得解释为可执行收益。
 
-0.6.0 的真实 30 股严格回测完成 48 期：毛收益 `6.29%`，成本后净收益 `-2.19%`，并捕获 1 次空头因跌停无法进场。
+0.7.0 的真实 30 股逐日账本完成 241 日：净收益 `-3.43%`、最大回撤 `-16.54%`，287 次进出全部闭合。全市场上半年检查点完成 113 日：净收益 `6.42%`，期末保留 5 个停牌和 2 个跌停仓位，没有假设成交。
 
 完整证据和限制见 [VALIDATION.md](./VALIDATION.md)。
 
@@ -120,6 +120,10 @@ python scripts/backtest.py --provider demo `
 
 python scripts/validate.py output/demo.json --evidence output/demo-evidence.parquet
 python scripts/summarize.py output/demo.json --evidence output/demo-evidence.parquet
+
+python scripts/backtest.py --provider demo --accounting-mode daily_nav `
+  --start 20220101 --end 20241231 --output output/demo-daily.json
+python scripts/validate.py output/demo-daily.json
 ```
 
 Demo 使用确定性合成数据，只验证软件契约，不验证策略收益。
@@ -144,18 +148,20 @@ python scripts/validate.py output/factor-20241231.json
 
 ```powershell
 python scripts/backtest.py --provider pandadata --all-a `
+  --accounting-mode daily_nav `
   --start 20240102 --end 20241231 `
   --cost-rate 0.001 `
   --cache-dir output/panda-cache `
   --delisting-exit-policy last_available_close `
-  --evidence-output output/backtest-2024-evidence.parquet `
   --output output/backtest-2024.json
 
-python scripts/validate.py output/backtest-2024.json --evidence output/backtest-2024-evidence.parquet
-python scripts/summarize.py output/backtest-2024.json --evidence output/backtest-2024-evidence.parquet
+python scripts/validate.py output/backtest-2024.json
+python scripts/summarize.py output/backtest-2024.json
 ```
 
-PandaData 已提供官方交易日历、`trade_status`、历史名称和每日涨跌停价。路径仍标记为 `experimental`，因为融券可得性、召回、排队成交和盘中滑点尚未建模。
+`daily_nav` 是严格执行研究的推荐模式：每个受限退出会逐日重试，锁定仓位继续盯市并占用后续预算。周期模式继续支持 `--evidence-output`，用于完整横截面分组与 Rank IC 审计。
+
+PandaData 已提供官方交易日历、`trade_status`、历史名称和每日涨跌停价。路径仍标记为 `experimental`，因为退市结算、融券可得性、召回、排队成交和盘中滑点尚未完整建模。
 
 请求缓存按 SDK、匿名账号哈希、接口环境、方法和参数隔离，并以 Parquet + manifest 原子写入。中断后重复同一命令会校验并复用已完成请求。
 
@@ -169,7 +175,7 @@ CSV 或 Parquet 必须包含：
 | `symbol` | 证券代码，例如 `600519.SH` |
 | `close` | 后复权收盘价 |
 
-可选点时标记为 `suspended`、`is_st` 和 `tradable`。只接受 `true/false`、`1/0`、`yes/no` 等明确布尔值；非法价格、空代码、周末日期和冲突重复行会直接拒绝。
+可选点时字段为 `suspended`、`is_st`、`tradable`、`limit_up` 和 `limit_down`。布尔列只接受 `true/false`、`1/0`、`yes/no` 等明确值；非法价格、空代码、周末日期和冲突重复行会直接拒绝。
 
 ```powershell
 python scripts/backtest.py --provider file `
@@ -190,6 +196,7 @@ PandaData 模式默认使用并缓存官方 SH 交易日历；离线稀疏面板
 - 决策、进场、计划退出和实际退出日期；
 - 每只证券的过去收益、目标/成交权重和进出价格；
 - 成交状态、强制退市退出、覆盖率、Rank IC、换手和成本；
+- `daily_nav` 的逐日现金、带符号份额、持仓估值、订单重试和锁定预算；
 - 可重算汇总指标和确定性 `run_id`。
 
 传入 `--evidence-output` 后，完整横截面 Parquet 会与 JSON 的 schema、行数和 SHA-256 绑定；校验器将独立重建多空分位并重算 Rank IC。
@@ -219,10 +226,10 @@ python scripts/package_release.py --destination dist
 
 - A 股现金股票通常无法直接实现本诊断中的个股空头腿。
 - 尚未建模融券费、可借券数量、召回、涨跌停排队和盘中滑点。
-- `last_available_close` 假设退市前最后收盘可成交，是显式研究近似。
-- 引擎只支持非重叠组合。
+- `last_available_close` 只允许在最后报价日尝试退出，不会越过停牌或涨跌停限制；退市结算值仍是缺口。
+- 计划信号批次不重叠；`daily_nav` 允许受限仓位跨批次延续，但不支持主动重叠 sleeve。
 - 一年全市场结果不足以得出跨周期结论，仍需多年度和样本外验证。
 
 解读结果前，请阅读 [methodology.md](./references/methodology.md)、[data_guide.md](./references/data_guide.md) 和 [source_boundary.md](./references/source_boundary.md)。
 
-下一阶段的独立横截面证据、官方交易状态和多年度样本计划见 [ROADMAP.md](./ROADMAP.md)。
+退市结算证据、空头可执行性和多年度样本计划见 [ROADMAP.md](./ROADMAP.md)。

@@ -22,6 +22,8 @@ def main() -> None:
             parser.error("--evidence is only valid for backtest results")
         validate_snapshot_result(payload)
     else:
+        if payload.get("artifact_type") == "daily_nav_backtest" and args.evidence:
+            parser.error("--evidence is not supported for daily NAV results")
         validate_result(payload, evidence_path=args.evidence)
     print(f"valid: {args.path}")
 

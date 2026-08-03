@@ -10,7 +10,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from lavine_reversal import StrategyConfig, run_backtest
+from lavine_reversal import StrategyConfig, run_backtest, run_daily_backtest
 from lavine_reversal.contract import write_json_atomic
 from lavine_reversal.evidence import FactorEvidenceWriter, attach_factor_evidence
 from lavine_reversal.providers import DemoProvider, FileProvider, PandaDataProvider
@@ -27,6 +27,7 @@ def main() -> None:
     universe.add_argument("--symbols", nargs="+")
     universe.add_argument("--all-a", action="store_true", help="Use PandaData full SH/SZ universe")
     parser.add_argument("--cost-rate", type=float, default=0.001)
+    parser.add_argument("--accounting-mode", choices=["period", "daily_nav"], default="period")
     parser.add_argument("--delisting-exit-policy", choices=["error", "last_available_close"], default="error")
     parser.add_argument("--calendar", help="CSV/text market calendar with a date column")
     parser.add_argument("--output", required=True)
@@ -46,6 +47,8 @@ def main() -> None:
     evidence_output = Path(args.evidence_output).resolve() if args.evidence_output else None
     if evidence_output == output:
         parser.error("--evidence-output must differ from --output")
+    if args.accounting_mode == "daily_nav" and evidence_output is not None:
+        parser.error("--evidence-output is only supported for --accounting-mode period")
     calendar = None
     calendar_source = "panel_date_union"
     if args.calendar:
@@ -85,7 +88,12 @@ def main() -> None:
         provider.bind_runtime_context(panel)
         cache = provider.cache_diagnostics()
         print(f"PandaData cache hits={cache['hits']} misses={cache['misses']}")
-    if evidence_output is not None:
+    if args.accounting_mode == "daily_nav":
+        result = run_daily_backtest(
+            panel, args.start, args.end, config, source=args.provider,
+            calendar=calendar, calendar_source=calendar_source,
+        )
+    elif evidence_output is not None:
         with FactorEvidenceWriter(evidence_output) as writer:
             result = run_backtest(
                 panel, args.start, args.end, config, source=args.provider,
@@ -101,7 +109,10 @@ def main() -> None:
     validate_result(result, evidence_path=evidence_output)
     write_json_atomic(output, result)
     metrics = result["metrics"]
-    print(f"run_id={result['run_id']} periods={metrics['periods']} total_return={metrics['total_return']:.4f} mean_rank_ic={metrics['mean_rank_ic']}")
+    if args.accounting_mode == "daily_nav":
+        print(f"run_id={result['run_id']} days={metrics['periods']} total_return={metrics['total_return']:.4f} open_positions={metrics['open_position_count']}")
+    else:
+        print(f"run_id={result['run_id']} periods={metrics['periods']} total_return={metrics['total_return']:.4f} mean_rank_ic={metrics['mean_rank_ic']}")
     print(Path(args.output))
 
 

@@ -1,6 +1,6 @@
 {
   "name": "shortterm-mean-reversal-lavine-version",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "entrypoint": "SKILL.md",
   "runtime": "python>=3.11",
   "license": "GPL-3.0-only",

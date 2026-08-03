@@ -7,9 +7,9 @@
 Point-in-time signals · Drift-aware turnover · PandaData · Auditable outputs
 
 [![CI](https://github.com/lavine888/skill-shortterm-mean-reversal/actions/workflows/validate.yml/badge.svg)](https://github.com/lavine888/skill-shortterm-mean-reversal/actions/workflows/validate.yml)
-[![Version](https://img.shields.io/badge/version-0.6.0-2563EB)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.7.0-2563EB)](./CHANGELOG.md)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-40%20passed-2E7D32)](./tests)
+[![Tests](https://img.shields.io/badge/tests-47%20passed-2E7D32)](./tests)
 [![PandaData](https://img.shields.io/badge/PandaData-0.0.12-0F766E)](./VALIDATION.md)
 [![License](https://img.shields.io/badge/license-GPL--3.0-4B5563)](./LICENSE)
 
@@ -83,8 +83,8 @@ The live-data run used `panda_data 0.0.12` and completed against the full Shangh
 | Complete non-overlapping periods | **48** |
 | Forward-return coverage | **99.998%** |
 | Rank IC coverage | **99.976%** |
-| Local test suite | **40 passed** |
-| 0.6.0 strict full-market execution | **9 blocked exits in period one; fail-closed** |
+| Local test suite | **47 passed** |
+| 0.7.0 full-market daily checkpoint | **113 days / 605 blocked-exit attempts** |
 
 ### 2024 Historical Research Snapshot (schema 3)
 
@@ -98,9 +98,9 @@ The live-data run used `panda_data 0.0.12` and completed against the full Shangh
 | Maximum drawdown | `-6.17%` |
 | Mean Rank IC | `0.0444` |
 
-This one-year historical result did not model directional limit-up/limit-down execution and is not the current strict result. Under the 0.6.0 official calendar and daily trading states, period one already contained one long position blocked at limit-down and eight short positions blocked from covering at limit-up. The run failed closed as designed. The `24.59%` figure above must not be interpreted as executable performance.
+This one-year historical result did not model directional limit-up/limit-down execution and is not the current strict result. Version 0.7.0 now carries and retries ordinary blocked exits under daily NAV accounting; the annual run ultimately stops when `600306.SH` remains suspended through delisting and no verifiable settlement value exists afterward. The `24.59%` figure above must not be interpreted as executable performance.
 
-The 0.6.0 strict 30-stock run completed 48 periods: `6.29%` gross, `-2.19%` net after costs, with one short entry blocked at limit-down.
+The 0.7.0 strict 30-stock daily ledger completed 241 days: `-3.43%` net, `-16.54%` maximum drawdown and 287 fully closed entries. The full-market first-half checkpoint completed 113 days at `6.42%`, ending with five suspended and two limit-down positions carried without assumed fills.
 
 See [VALIDATION.md](./VALIDATION.md) for the full evidence, stability split, delisting cases and limitations.
 
@@ -119,6 +119,10 @@ python scripts/backtest.py --provider demo `
 
 python scripts/validate.py output/demo.json --evidence output/demo-evidence.parquet
 python scripts/summarize.py output/demo.json --evidence output/demo-evidence.parquet
+
+python scripts/backtest.py --provider demo --accounting-mode daily_nav `
+  --start 20220101 --end 20241231 --output output/demo-daily.json
+python scripts/validate.py output/demo-daily.json
 ```
 
 The demo is synthetic and deterministic. It validates the software contract, not the strategy.
@@ -143,18 +147,20 @@ python scripts/validate.py output/factor-20241231.json
 
 ```powershell
 python scripts/backtest.py --provider pandadata --all-a `
+  --accounting-mode daily_nav `
   --start 20240102 --end 20241231 `
   --cost-rate 0.001 `
   --cache-dir output/panda-cache `
   --delisting-exit-policy last_available_close `
-  --evidence-output output/backtest-2024-evidence.parquet `
   --output output/backtest-2024.json
 
-python scripts/validate.py output/backtest-2024.json --evidence output/backtest-2024-evidence.parquet
-python scripts/summarize.py output/backtest-2024.json --evidence output/backtest-2024-evidence.parquet
+python scripts/validate.py output/backtest-2024.json
+python scripts/summarize.py output/backtest-2024.json
 ```
 
-PandaData now supplies the official calendar, `trade_status`, historical names and daily limit prices. The path remains `experimental` because borrow availability, recalls, queue execution and intraday slippage are not modeled.
+`daily_nav` is the recommended strict execution-research mode. Every blocked exit is retried daily, while carried positions remain marked and consume later side budgets. Period mode retains `--evidence-output` for complete cross-sectional grouping and Rank IC audits.
+
+PandaData now supplies the official calendar, `trade_status`, historical names and daily limit prices. The path remains `experimental` because delisting settlement, borrow availability, recalls, queue execution and intraday slippage are not fully modeled.
 
 Request caches are isolated by SDK, anonymous account hash, provider environment, method and parameters. Each response is written atomically as Parquet plus a verified manifest, so an interrupted full-market run can resume completed requests.
 
@@ -168,7 +174,7 @@ CSV or Parquet input must contain:
 | `symbol` | Security code, for example `600519.SH` |
 | `close` | Post-adjusted close |
 
-Optional point-in-time flags are `suspended`, `is_st` and `tradable`. The normalizer accepts only explicit boolean values such as `true/false`, `1/0` or `yes/no`; invalid prices, blank symbols, weekend dates and conflicting duplicate rows fail closed.
+Optional point-in-time fields are `suspended`, `is_st`, `tradable`, `limit_up` and `limit_down`. Boolean columns accept only explicit values such as `true/false`, `1/0` or `yes/no`; invalid prices, blank symbols, weekend dates and conflicting duplicate rows fail closed.
 
 ```powershell
 python scripts/backtest.py --provider file `
@@ -189,6 +195,7 @@ Every validated result contains:
 - Decision, entry, planned exit and actual exit dates;
 - Per-symbol past return, target/executed weight and entry/exit price;
 - Fill status, forced-delisting status, coverage, Rank IC, turnover and costs;
+- Daily cash, signed units, position marks, order retries and locked side budgets in `daily_nav` mode;
 - Recomputable aggregate metrics and a deterministic `run_id`.
 
 With `--evidence-output`, the complete cross-sectional Parquet is bound to the JSON by schema, row count and SHA-256. The validator independently reconstructs both tails and recomputes Rank IC.
@@ -218,13 +225,13 @@ The deterministic ZIP contains both READMEs and a `MANIFEST.sha256`. The package
 
 - A-share cash equities generally cannot provide the individual-stock short leg used by this diagnostic.
 - Borrow fees, availability, recalls, limit-order queues and intraday slippage are not modeled.
-- `last_available_close` assumes the last pre-delisting close was executable; this is an explicit research approximation.
-- The engine supports non-overlapping portfolios only.
+- `last_available_close` permits an attempt on the last quoted session but never overrides suspension or price-limit blocks; delisting settlement remains unresolved.
+- Scheduled signal cohorts do not overlap. `daily_nav` can carry blocked positions across cohorts, but active overlapping sleeves are not supported.
 - One year of full-market results is not enough for a multi-cycle conclusion; multi-year and out-of-sample validation remain required.
 
 Read [methodology.md](./references/methodology.md) for the math, [data_guide.md](./references/data_guide.md) for input requirements, and [source_boundary.md](./references/source_boundary.md) before interpreting any result.
 
-See [ROADMAP.md](./ROADMAP.md) for independent cross-sectional evidence, official trading states and multi-year validation work.
+See [ROADMAP.md](./ROADMAP.md) for delisting settlement evidence, short-leg execution and multi-year validation work.
 
 ## License
 

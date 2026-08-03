@@ -229,8 +229,6 @@ def _validate_factor_evidence(payload: dict[str, Any], evidence_path: str | Path
                 expected_exit_block = "missing_price"
             elif row.exit_suspended:
                 expected_exit_block = "suspended"
-            elif row.exit_is_st:
-                expected_exit_block = "st"
             elif not row.exit_tradable:
                 expected_exit_block = "non_tradable"
             else:
@@ -263,6 +261,12 @@ def _validate_factor_evidence(payload: dict[str, Any], evidence_path: str | Path
 
 
 def validate_result(payload: dict[str, Any], evidence_path: str | Path | None = None) -> None:
+    if payload.get("artifact_type") == "daily_nav_backtest":
+        if evidence_path is not None:
+            raise ValueError("cross-sectional evidence is not supported for daily NAV results")
+        from .daily_validate import validate_daily_result
+        validate_daily_result(payload)
+        return
     if not isinstance(payload, dict):
         raise ValueError("result must be an object")
     _assert_finite_json(payload)

@@ -47,7 +47,7 @@ Use this skill for Q58 research: rank A-shares by their trailing five-market-ses
 3. Require valid closes on both the decision date and exactly five market sessions earlier.
 4. Use PandaData's official SH calendar and exclude decision-date rows marked suspended, ST or non-tradable.
 5. Select deterministic bottom/top deciles, with 0.5 long and 0.5 short gross notional.
-6. Leave missing, suspended, ST or directionally limit-blocked entries in cash; fail closed if an executed position cannot be valued and exited.
+6. Leave missing, suspended, ST or directionally limit-blocked entries in cash. In `daily_nav` mode, carry blocked exits and retry every market session while reserving their side budget.
 7. Measure returns from the next market close through the close five sessions later.
 8. Deduct one-way costs from drift-adjusted traded notional and report Rank IC, turnover, coverage and drawdown.
 
@@ -60,13 +60,17 @@ pip install -r requirements.txt
 python scripts/backtest.py --provider demo --start 20220101 --end 20241231 `
   --evidence-output output/demo-evidence.parquet --output output/demo.json
 python scripts/validate.py output/demo.json --evidence output/demo-evidence.parquet
+python scripts/backtest.py --provider demo --accounting-mode daily_nav `
+  --start 20220101 --end 20241231 --output output/demo-daily.json
+python scripts/validate.py output/demo-daily.json
 ```
 
 Run a frozen CSV or Parquet panel containing `date`, `symbol`, and post-adjusted `close`:
 
 ```powershell
 python scripts/backtest.py --provider file --input data/daily.parquet `
-  --start 20210101 --end 20251231 --cost-rate 0.001 --output output/backtest.json
+  --accounting-mode daily_nav --start 20210101 --end 20251231 `
+  --cost-rate 0.001 --output output/backtest.json
 ```
 
 PandaData credentials are read from environment variables:
@@ -75,17 +79,18 @@ PandaData credentials are read from environment variables:
 $env:PANDA_DATA_USERNAME = "your-account"
 $env:PANDA_DATA_PASSWORD = "your-password"
 python scripts/backtest.py --provider pandadata --all-a `
+  --accounting-mode daily_nav `
   --start 20210101 --end 20251231 `
   --cache-dir output/panda-cache `
   --delisting-exit-policy last_available_close `
-  --evidence-output output/factor-evidence.parquet --output output/backtest.json
+  --output output/backtest.json
 ```
 
 ## Output Contract
 
-The JSON records the complete strategy configuration, source status, input-panel SHA-256, request-manifest SHA-256, deterministic run ID, aggregate performance, and each rebalance period. Per-symbol evidence includes target and executed weights, entry and exit prices, fill statuses and forward returns, allowing the validator to recompute period return and cost. An optional full cross-sectional Parquet is bound by schema, counts and SHA-256 so the validator can reconstruct tails and Rank IC. PandaData remains `experimental` until its trading-status fields and historical delisted universe are verified against the live SDK.
+The JSON records the complete strategy configuration, source status, input-panel SHA-256, request-manifest SHA-256 and deterministic run ID. Recommended `daily_nav` output contains every close mark, signed position, cash balance, entry/exit attempt, observed trading state, cost and retry, allowing the validator to replay the ledger independently. Period mode retains optional full cross-sectional Parquet evidence so the validator can reconstruct tails and Rank IC. PandaData remains `experimental` because delisting settlement and short-borrow execution are not fully evidenced.
 
-Use `scripts/summarize.py` only after `scripts/validate.py` passes. The explicit delisting policy assumes execution at the last available close before a confirmed delisting; the default policy remains `error`.
+Use `scripts/summarize.py` only after `scripts/validate.py` passes. `last_available_close` permits an exit attempt at the final observed close but does not override suspension or price-limit blocks; absent a verifiable post-delisting settlement value, an open position still fails closed. The default delisting policy remains `error`.
 
 ## Safety Boundary
 

@@ -22,6 +22,39 @@ def main() -> None:
     args = parser.parse_args()
     payload = json.loads(Path(args.path).read_text(encoding="utf-8"))
     validate_result(payload, evidence_path=args.evidence)
+    if payload.get("artifact_type") == "daily_nav_backtest":
+        metrics = payload["metrics"]
+        unresolved = {
+            mark["lot_id"]: mark for mark in payload["final_positions"]
+            if mark["effective_exit_date"] <= payload["days"][-1]["date"]
+        }
+        last_exit_attempt = {}
+        for day in payload["days"]:
+            for attempt in day["attempts"]:
+                if attempt["kind"] == "exit":
+                    last_exit_attempt[attempt["lot_id"]] = attempt
+        unresolved_reasons: Counter[str] = Counter(
+            last_exit_attempt[lot_id]["block_reason"] for lot_id in unresolved
+        )
+        summary = {
+            "run_id": payload["run_id"],
+            "accounting_mode": "daily_nav",
+            "days": len(payload["days"]),
+            "total_return": metrics["total_return"],
+            "max_drawdown": metrics["max_drawdown"],
+            "sharpe": metrics["sharpe"],
+            "total_cost": metrics["total_cost"],
+            "filled_entries": metrics["filled_entries"],
+            "blocked_entries": metrics["blocked_entries"],
+            "filled_exits": metrics["filled_exits"],
+            "blocked_exit_attempts": metrics["blocked_exit_attempts"],
+            "open_position_count": metrics["open_position_count"],
+            "unresolved_exit_count": metrics["unresolved_exit_count"],
+            "unresolved_exit_reasons": dict(sorted(unresolved_reasons.items())),
+            "unresolved_symbols": sorted(mark["symbol"] for mark in unresolved.values())[:20],
+        }
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return
     periods = payload["periods"]
     gross_total = float(np.prod([1.0 + period["gross_return"] for period in periods]) - 1.0)
     positive_periods = sum(period["net_return"] > 0 for period in periods)

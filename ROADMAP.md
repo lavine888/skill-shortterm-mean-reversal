@@ -1,6 +1,6 @@
 # Roadmap
 
-## P0: Deferred Exit and Daily NAV
+## Completed in 0.7.0: Deferred Exit and Daily NAV
 
 - Carry positions that cannot exit at limit-down, limit-up or suspension instead of assuming a fill.
 - Mark blocked positions daily and defer liquidation until the first directionally executable session.
@@ -8,7 +8,14 @@
 - Replace sequential five-day period compounding with daily NAV and explicit order/position ledgers.
 - Preserve every blocked order, retry date, fill assumption and cost in auditable evidence.
 
-Until this exists, strict full-market runs intentionally fail closed on the first unresolved exit rather than publish an execution-biased return.
+The ledger now carries and retries ordinary blocked exits. It still fails closed when an open security disappears after delisting without a verifiable settlement value.
+
+## P0: Delisting Settlement Evidence
+
+- Source exchange-backed delisting settlement or transfer-board values.
+- Distinguish cash cancellation, transfer to another venue and unresolved beneficial ownership.
+- Replay settlement cash flows without retroactively changing prior NAV marks.
+- Keep `error` as the default when no independently verifiable settlement value exists.
 
 ## Completed in 0.5.0: Independent Factor Evidence
 

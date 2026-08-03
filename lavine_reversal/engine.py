@@ -162,7 +162,7 @@ def run_backtest(
             visible_symbols=visible_symbols,
         )
         entry_prices, exit_prices = close.loc[entry], close.loc[exit_date]
-        entry_executable, exit_executable = executable.loc[entry], executable.loc[exit_date]
+        entry_executable = executable.loc[entry]
         entry_suspended, exit_suspended = suspended.loc[entry], suspended.loc[exit_date]
         entry_is_st, exit_is_st = is_st.loc[entry], is_st.loc[exit_date]
         entry_tradable, exit_tradable = tradable.loc[entry], tradable.loc[exit_date]
@@ -206,9 +206,7 @@ def run_backtest(
                 exit_block_reason = "missing_price"
             elif bool(exit_suspended.get(symbol, True)):
                 exit_block_reason = "suspended"
-            elif bool(exit_is_st.get(symbol, False)):
-                exit_block_reason = "st"
-            elif not bool(exit_tradable.get(symbol, False)) or not bool(exit_executable.get(symbol, False)):
+            elif not bool(exit_tradable.get(symbol, False)):
                 exit_block_reason = "non_tradable"
             else:
                 exit_block_reason = _limit_block_reason(
@@ -226,7 +224,7 @@ def run_backtest(
                 candidates = own.loc[(own["date"] >= entry) & (own["date"] < delisted_date)] if delisted_date is not None and entry < delisted_date <= exit_date else own.iloc[0:0]
                 if not candidates.empty:
                     forced = candidates.sort_values("date").iloc[-1]
-                    forced_executable = not bool(forced["suspended"]) and not bool(forced["is_st"]) and bool(forced["tradable"])
+                    forced_executable = not bool(forced["suspended"]) and bool(forced["tradable"])
                     forced_price = float(forced["close"])
                     forced_up = float(forced["limit_up"]) if "limit_up" in forced and pd.notna(forced["limit_up"]) else None
                     forced_down = float(forced["limit_down"]) if "limit_down" in forced and pd.notna(forced["limit_down"]) else None
