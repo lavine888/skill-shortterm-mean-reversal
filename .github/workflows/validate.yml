@@ -1,0 +1,20 @@
+name: validate
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: pytest
+      - run: python scripts/validate_metadata.py
+      - run: python scripts/backtest.py --provider demo --start 20220101 --end 20241231 --output output/demo.json
+      - run: python scripts/validate.py output/demo.json

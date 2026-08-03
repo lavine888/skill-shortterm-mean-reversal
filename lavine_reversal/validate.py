@@ -1,0 +1,238 @@
+from __future__ import annotations
+
+import math
+import re
+from numbers import Real
+from typing import Any
+
+import numpy as np
+
+from .contract import compute_run_id
+from .engine import calculate_stats
+from .version import SCHEMA_VERSION, SKILL_NAME, SKILL_VERSION
+
+
+TOP_LEVEL_KEYS = {
+    "schema_version", "skill", "skill_version", "source", "source_status",
+    "start", "end", "config", "data_capabilities", "metrics", "periods",
+    "source_context", "limitations", "run_id",
+}
+PERIOD_KEYS = {
+    "lookback_date", "decision_date", "entry_date", "exit_date",
+    "signal_universe_size", "long_symbols", "short_symbols",
+    "selected_evidence", "forward_coverage", "rank_ic_sample_size",
+    "rank_ic_coverage", "rank_ic", "gross_return", "traded_notional",
+    "cost", "net_return", "forced_delisting_exit_count",
+}
+EVIDENCE_KEYS = {
+    "past_return", "reversal_score", "target_weight", "executed_weight",
+    "entry_price", "exit_price", "forward_return", "entry_status", "exit_status",
+    "actual_exit_date",
+}
+SNAPSHOT_TOP_LEVEL_KEYS = {
+    "schema_version", "artifact_type", "skill", "skill_version", "source",
+    "source_status", "config", "source_context", "data_capabilities",
+    "snapshot", "run_id",
+}
+SNAPSHOT_KEYS = {
+    "decision_date", "lookback_date", "universe_size", "long_symbols",
+    "short_symbols", "weights", "scores", "diagnostics",
+}
+
+
+def _assert_finite_json(value: Any, path: str = "result") -> None:
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, Real):
+        if not math.isfinite(float(value)):
+            raise ValueError(f"{path} contains a non-finite number")
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _assert_finite_json(item, f"{path}[{index}]")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError(f"{path} contains a non-string key")
+            _assert_finite_json(item, f"{path}.{key}")
+        return
+    raise ValueError(f"{path} contains unsupported type {type(value).__name__}")
+
+
+def _require_keys(value: dict[str, Any], required: set[str], path: str) -> None:
+    missing = sorted(required - set(value))
+    if missing:
+        raise ValueError(f"{path} missing keys: {', '.join(missing)}")
+
+
+def _close(left: float, right: float) -> bool:
+    return math.isclose(float(left), float(right), rel_tol=1e-10, abs_tol=1e-12)
+
+
+def _valid_date(value: Any) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"\d{8}", value) is not None
+
+
+def validate_result(payload: dict[str, Any]) -> None:
+    if not isinstance(payload, dict):
+        raise ValueError("result must be an object")
+    _assert_finite_json(payload)
+    _require_keys(payload, TOP_LEVEL_KEYS, "result")
+    if (
+        payload["schema_version"] != SCHEMA_VERSION
+        or payload["skill"] != SKILL_NAME
+        or payload["skill_version"] != SKILL_VERSION
+    ):
+        raise ValueError("unsupported result contract")
+    if payload["source_status"] not in {"synthetic", "experimental", "user_supplied"}:
+        raise ValueError("invalid source_status")
+    if not _valid_date(payload["start"]) or not _valid_date(payload["end"]) or payload["start"] > payload["end"]:
+        raise ValueError("invalid result date range")
+    if not isinstance(payload["periods"], list) or not payload["periods"]:
+        raise ValueError("periods must be a non-empty list")
+    if compute_run_id(payload) != payload["run_id"]:
+        raise ValueError("run_id does not match canonical result content")
+
+    config = payload["config"]
+    cost_rate = float(config["cost_rate"])
+    previous_decision = ""
+    for index, period in enumerate(payload["periods"]):
+        path = f"periods[{index}]"
+        if not isinstance(period, dict):
+            raise ValueError(f"{path} must be an object")
+        _require_keys(period, PERIOD_KEYS, path)
+        period_dates = [period[key] for key in ("lookback_date", "decision_date", "entry_date", "exit_date")]
+        if not all(_valid_date(value) for value in period_dates) or not period_dates[0] < period_dates[1] < period_dates[2] < period_dates[3]:
+            raise ValueError(f"{path} dates must satisfy lookback < decision < entry < exit")
+        if previous_decision and period["decision_date"] <= previous_decision:
+            raise ValueError("decision dates must be strictly increasing")
+        previous_decision = period["decision_date"]
+
+        longs, shorts = period["long_symbols"], period["short_symbols"]
+        if len(longs) != len(set(longs)) or len(shorts) != len(set(shorts)) or set(longs) & set(shorts):
+            raise ValueError(f"{path} selections contain duplicates or overlap")
+        selected = longs + shorts
+        evidence = period["selected_evidence"]
+        if set(evidence) != set(selected):
+            raise ValueError(f"{path} evidence does not match selected symbols")
+        gross_return = 0.0
+        priced = 0
+        forced_delisting_exits = 0
+        for symbol in selected:
+            item = evidence[symbol]
+            _require_keys(item, EVIDENCE_KEYS, f"{path}.selected_evidence.{symbol}")
+            if not _close(item["reversal_score"], -item["past_return"]):
+                raise ValueError(f"{path} has inconsistent reversal score for {symbol}")
+            target, executed = float(item["target_weight"]), float(item["executed_weight"])
+            if symbol in longs and target <= 0 or symbol in shorts and target >= 0:
+                raise ValueError(f"{path} has wrong target weight sign for {symbol}")
+            if item["entry_status"] == "filled":
+                if not _close(executed, target) or item["entry_price"] is None:
+                    raise ValueError(f"{path} has inconsistent filled entry for {symbol}")
+                if item["exit_status"] not in {"filled", "forced_delisting_exit"} or item["exit_price"] is None or item["forward_return"] is None:
+                    raise ValueError(f"{path} has unresolved filled position for {symbol}")
+                if not _valid_date(item["actual_exit_date"]) or not period["entry_date"] <= item["actual_exit_date"] <= period["exit_date"]:
+                    raise ValueError(f"{path} has invalid actual exit date for {symbol}")
+                expected_return = float(item["exit_price"]) / float(item["entry_price"]) - 1.0
+                if not _close(item["forward_return"], expected_return):
+                    raise ValueError(f"{path} has inconsistent forward return for {symbol}")
+                gross_return += executed * float(item["forward_return"])
+                priced += 1
+                forced_delisting_exits += item["exit_status"] == "forced_delisting_exit"
+            elif item["entry_status"] == "unfilled":
+                if not _close(executed, 0.0) or item["entry_price"] is not None or item["forward_return"] is not None or item["actual_exit_date"] is not None:
+                    raise ValueError(f"{path} has inconsistent unfilled entry for {symbol}")
+            else:
+                raise ValueError(f"{path} has invalid entry status for {symbol}")
+        if not _close(sum(evidence[s]["target_weight"] for s in longs), 0.5):
+            raise ValueError(f"{path} long target weights do not sum to 0.5")
+        if not _close(sum(evidence[s]["target_weight"] for s in shorts), -0.5):
+            raise ValueError(f"{path} short target weights do not sum to -0.5")
+        if not _close(period["forward_coverage"], priced / len(selected)):
+            raise ValueError(f"{path} forward coverage is inconsistent")
+        if not 0 <= period["rank_ic_sample_size"] <= period["signal_universe_size"]:
+            raise ValueError(f"{path} rank IC sample size is invalid")
+        if not _close(period["rank_ic_coverage"], period["rank_ic_sample_size"] / period["signal_universe_size"]):
+            raise ValueError(f"{path} rank IC coverage is inconsistent")
+        if not _close(period["gross_return"], gross_return):
+            raise ValueError(f"{path} gross return is inconsistent")
+        if period["forced_delisting_exit_count"] != forced_delisting_exits:
+            raise ValueError(f"{path} forced delisting exit count is inconsistent")
+        if not _close(period["cost"], cost_rate * period["traded_notional"]):
+            raise ValueError(f"{path} cost is inconsistent")
+        if not _close(period["net_return"], period["gross_return"] - period["cost"]):
+            raise ValueError(f"{path} net return is inconsistent")
+
+    metrics = payload["metrics"]
+    returns = [float(period["net_return"]) for period in payload["periods"]]
+    expected_stats = calculate_stats(returns, int(config["hold_days"]))
+    for key, expected in expected_stats.items():
+        actual = metrics.get(key)
+        if expected is None:
+            if actual is not None:
+                raise ValueError(f"metrics.{key} is inconsistent")
+        elif actual is None or not _close(actual, expected):
+            raise ValueError(f"metrics.{key} is inconsistent")
+    expected_means = {
+        "average_traded_notional": np.mean([period["traded_notional"] for period in payload["periods"]]),
+        "average_forward_coverage": np.mean([period["forward_coverage"] for period in payload["periods"]]),
+        "average_rank_ic_coverage": np.mean([period["rank_ic_coverage"] for period in payload["periods"]]),
+    }
+    rank_ics = [period["rank_ic"] for period in payload["periods"] if period["rank_ic"] is not None]
+    expected_means["mean_rank_ic"] = np.mean(rank_ics) if rank_ics else None
+    expected_means["forced_delisting_exits"] = sum(period["forced_delisting_exit_count"] for period in payload["periods"])
+    for key, expected in expected_means.items():
+        actual = metrics.get(key)
+        if expected is None:
+            if actual is not None:
+                raise ValueError(f"metrics.{key} is inconsistent")
+        elif actual is None or not _close(actual, expected):
+            raise ValueError(f"metrics.{key} is inconsistent")
+
+
+def validate_snapshot_result(payload: dict[str, Any]) -> None:
+    if not isinstance(payload, dict):
+        raise ValueError("snapshot result must be an object")
+    _assert_finite_json(payload)
+    _require_keys(payload, SNAPSHOT_TOP_LEVEL_KEYS, "snapshot result")
+    if (
+        payload["schema_version"] != SCHEMA_VERSION
+        or payload["artifact_type"] != "factor_snapshot"
+        or payload["skill"] != SKILL_NAME
+        or payload["skill_version"] != SKILL_VERSION
+    ):
+        raise ValueError("unsupported snapshot contract")
+    if compute_run_id(payload) != payload["run_id"]:
+        raise ValueError("run_id does not match canonical snapshot content")
+    snapshot = payload["snapshot"]
+    _require_keys(snapshot, SNAPSHOT_KEYS, "snapshot")
+    if not _valid_date(snapshot["lookback_date"]) or not _valid_date(snapshot["decision_date"]) or snapshot["lookback_date"] >= snapshot["decision_date"]:
+        raise ValueError("snapshot dates are invalid")
+    longs, shorts = snapshot["long_symbols"], snapshot["short_symbols"]
+    if len(longs) != len(set(longs)) or len(shorts) != len(set(shorts)) or set(longs) & set(shorts):
+        raise ValueError("snapshot selections contain duplicates or overlap")
+    selected = longs + shorts
+    if set(snapshot["weights"]) != set(selected):
+        raise ValueError("snapshot weights do not match selections")
+    if snapshot["universe_size"] != len(snapshot["scores"]):
+        raise ValueError("snapshot universe size does not match scores")
+    diagnostics = snapshot["diagnostics"]
+    if diagnostics["eligible_symbol_count"] != snapshot["universe_size"]:
+        raise ValueError("snapshot diagnostics eligible count is inconsistent")
+    excluded_symbols = [symbol for symbols in diagnostics["exclusions"].values() for symbol in symbols]
+    if len(excluded_symbols) != len(set(excluded_symbols)):
+        raise ValueError("snapshot diagnostics contain duplicate exclusions")
+    if diagnostics["excluded_symbol_count"] != len(excluded_symbols):
+        raise ValueError("snapshot diagnostics excluded count is inconsistent")
+    if diagnostics["input_symbol_count"] != diagnostics["eligible_symbol_count"] + diagnostics["excluded_symbol_count"]:
+        raise ValueError("snapshot diagnostics input count is inconsistent")
+    if not set(selected).issubset(snapshot["scores"]):
+        raise ValueError("snapshot selected symbols are absent from scores")
+    for symbol, values in snapshot["scores"].items():
+        if not _close(values["reversal_score"], -values["past_return"]):
+            raise ValueError(f"snapshot has inconsistent reversal score for {symbol}")
+    if not _close(sum(snapshot["weights"][symbol] for symbol in longs), 0.5):
+        raise ValueError("snapshot long weights do not sum to 0.5")
+    if not _close(sum(snapshot["weights"][symbol] for symbol in shorts), -0.5):
+        raise ValueError("snapshot short weights do not sum to -0.5")
