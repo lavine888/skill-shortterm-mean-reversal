@@ -7,9 +7,9 @@
 点时信号 · 漂移后换手 · PandaData · 可审计输出
 
 [![CI](https://github.com/lavine888/skill-shortterm-mean-reversal/actions/workflows/validate.yml/badge.svg)](https://github.com/lavine888/skill-shortterm-mean-reversal/actions/workflows/validate.yml)
-[![Version](https://img.shields.io/badge/version-0.4.0-2563EB)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.5.0-2563EB)](./CHANGELOG.md)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-30%20passed-2E7D32)](./tests)
+[![Tests](https://img.shields.io/badge/tests-33%20passed-2E7D32)](./tests)
 [![PandaData](https://img.shields.io/badge/PandaData-0.0.12-0F766E)](./VALIDATION.md)
 [![License](https://img.shields.io/badge/license-GPL--3.0-4B5563)](./LICENSE)
 
@@ -83,7 +83,7 @@ flowchart LR
 <tr><td>完整非重叠期间</td><td><strong>48</strong></td></tr>
 <tr><td>远期收益覆盖率</td><td><strong>99.998%</strong></td></tr>
 <tr><td>Rank IC 覆盖率</td><td><strong>99.976%</strong></td></tr>
-<tr><td>本地测试</td><td><strong>30 passed</strong></td></tr>
+<tr><td>本地测试</td><td><strong>33 passed</strong></td></tr>
 </table>
 
 ### 2024 研究快照
@@ -112,10 +112,11 @@ python -m pytest -q
 
 python scripts/backtest.py --provider demo `
   --start 20220101 --end 20241231 `
+  --evidence-output output/demo-evidence.parquet `
   --output output/demo.json
 
-python scripts/validate.py output/demo.json
-python scripts/summarize.py output/demo.json
+python scripts/validate.py output/demo.json --evidence output/demo-evidence.parquet
+python scripts/summarize.py output/demo.json --evidence output/demo-evidence.parquet
 ```
 
 Demo 使用确定性合成数据，只验证软件契约，不验证策略收益。
@@ -144,10 +145,11 @@ python scripts/backtest.py --provider pandadata --all-a `
   --cost-rate 0.001 `
   --cache-dir output/panda-cache `
   --delisting-exit-policy last_available_close `
+  --evidence-output output/backtest-2024-evidence.parquet `
   --output output/backtest-2024.json
 
-python scripts/validate.py output/backtest-2024.json
-python scripts/summarize.py output/backtest-2024.json
+python scripts/validate.py output/backtest-2024.json --evidence output/backtest-2024-evidence.parquet
+python scripts/summarize.py output/backtest-2024.json --evidence output/backtest-2024-evidence.parquet
 ```
 
 PandaData 路径仍标记为 `experimental`：当前价格响应不提供历史点时停牌、ST、涨跌停和融券可得性字段。
@@ -186,6 +188,8 @@ python scripts/backtest.py --provider file `
 - 每只证券的过去收益、目标/成交权重和进出价格；
 - 成交状态、强制退市退出、覆盖率、Rank IC、换手和成本；
 - 可重算汇总指标和确定性 `run_id`。
+
+传入 `--evidence-output` 后，完整横截面 Parquet 会与 JSON 的 schema、行数和 SHA-256 绑定；校验器将独立重建多空分位并重算 Rank IC。
 
 校验器会拒绝非有限数字、日期错序、收益或成本不一致、证据缺失和被篡改的 run ID。JSON 使用原子替换写盘。
 

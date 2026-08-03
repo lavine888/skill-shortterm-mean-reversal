@@ -17,9 +17,10 @@ from lavine_reversal.validate import validate_result
 def main() -> None:
     parser = argparse.ArgumentParser(description="Summarize a validated Q58 backtest")
     parser.add_argument("path")
+    parser.add_argument("--evidence", help="Bound full cross-sectional evidence Parquet")
     args = parser.parse_args()
     payload = json.loads(Path(args.path).read_text(encoding="utf-8"))
-    validate_result(payload)
+    validate_result(payload, evidence_path=args.evidence)
     periods = payload["periods"]
     gross_total = float(np.prod([1.0 + period["gross_return"] for period in periods]) - 1.0)
     positive_periods = sum(period["net_return"] > 0 for period in periods)

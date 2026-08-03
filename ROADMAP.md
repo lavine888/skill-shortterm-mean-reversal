@@ -1,13 +1,13 @@
 # Roadmap
 
-## P0: Independent Factor Evidence
+## Completed in 0.5.0: Independent Factor Evidence
 
-- Materialize a frozen Parquet table for every decision-date cross-section.
-- Include symbol, trailing return, reversal score, group, entry/exit price and forward return.
-- Bind the evidence table to the JSON result with row counts, schema version and SHA-256.
-- Extend the validator to reconstruct deciles, Rank IC and coverage from that table.
+- Materialized a frozen Parquet table for every decision-date cross-section.
+- Included symbol, trailing return, reversal score, group, entry/exit price and forward return.
+- Bound the evidence table to JSON with row counts, schema version and SHA-256.
+- Extended the validator to reconstruct deciles, Rank IC and coverage from that table.
 
-This is the main remaining audit gap. The current JSON fully validates selected-position returns, costs and aggregate accounting, but does not distribute the complete cross-section needed to independently recompute selection and Rank IC.
+The remaining work is to freeze and publish a provider-permitted multi-year evidence artifact, not to expand the contract further.
 
 ## P1: Data and Execution Evidence
 

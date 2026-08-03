@@ -3,12 +3,15 @@ from __future__ import annotations
 import math
 import re
 from numbers import Real
+from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pandas as pd
 
 from .contract import compute_run_id
-from .engine import calculate_stats
+from .engine import _rank_ic, calculate_stats
+from .evidence import EVIDENCE_COLUMNS, EVIDENCE_SCHEMA_VERSION, file_sha256
 from .version import SCHEMA_VERSION, SKILL_NAME, SKILL_VERSION
 
 
@@ -109,7 +112,101 @@ def _validate_source_context(payload: dict[str, Any]) -> None:
             raise ValueError("PandaData response diagnostics are invalid")
 
 
-def validate_result(payload: dict[str, Any]) -> None:
+def _validate_evidence_metadata(payload: dict[str, Any]) -> None:
+    metadata = payload.get("factor_evidence")
+    if metadata is None:
+        return
+    required = {"schema_version", "artifact_name", "row_count", "decision_count", "columns", "file_sha256"}
+    _require_keys(metadata, required, "factor_evidence")
+    if metadata["schema_version"] != EVIDENCE_SCHEMA_VERSION:
+        raise ValueError("unsupported factor evidence schema")
+    if metadata["columns"] != EVIDENCE_COLUMNS:
+        raise ValueError("factor evidence columns do not match the fixed contract")
+    if not isinstance(metadata["artifact_name"], str) or not metadata["artifact_name"].endswith(".parquet"):
+        raise ValueError("factor evidence artifact name is invalid")
+    if not isinstance(metadata["row_count"], int) or metadata["row_count"] <= 0:
+        raise ValueError("factor evidence row count is invalid")
+    if not isinstance(metadata["decision_count"], int) or metadata["decision_count"] <= 0:
+        raise ValueError("factor evidence decision count is invalid")
+    if metadata["decision_count"] != len(payload["periods"]):
+        raise ValueError("factor evidence decision count does not match backtest periods")
+    if metadata["row_count"] != sum(period["signal_universe_size"] for period in payload["periods"]):
+        raise ValueError("factor evidence row count does not match period universes")
+    if not _valid_sha256(metadata["file_sha256"]):
+        raise ValueError("factor evidence hash is invalid")
+
+
+def _validate_factor_evidence(payload: dict[str, Any], evidence_path: str | Path) -> None:
+    metadata = payload.get("factor_evidence")
+    if metadata is None:
+        raise ValueError("result does not bind a factor evidence artifact")
+    path = Path(evidence_path)
+    if path.name != metadata["artifact_name"]:
+        raise ValueError("factor evidence filename does not match result metadata")
+    if file_sha256(path) != metadata["file_sha256"]:
+        raise ValueError("factor evidence file hash does not match result metadata")
+    frame = pd.read_parquet(path)
+    if list(frame.columns) != EVIDENCE_COLUMNS:
+        raise ValueError("factor evidence file columns do not match the fixed contract")
+    if len(frame) != metadata["row_count"] or frame["decision_date"].nunique() != metadata["decision_count"]:
+        raise ValueError("factor evidence file counts do not match result metadata")
+    expected_decisions = {period["decision_date"] for period in payload["periods"]}
+    if set(frame["decision_date"]) != expected_decisions:
+        raise ValueError("factor evidence decision dates do not match backtest periods")
+    if frame.duplicated(["decision_date", "symbol"]).any():
+        raise ValueError("factor evidence contains duplicate decision-date symbols")
+    if not frame["selected_side"].isin(["long", "short", "none"]).all():
+        raise ValueError("factor evidence contains an invalid selected side")
+    numeric = ["past_return", "reversal_score", "target_weight"]
+    if not np.isfinite(frame[numeric].to_numpy(dtype=float)).all():
+        raise ValueError("factor evidence contains non-finite required values")
+
+    for period in payload["periods"]:
+        decision = period["decision_date"]
+        group = frame.loc[frame["decision_date"] == decision].copy()
+        if len(group) != period["signal_universe_size"]:
+            raise ValueError(f"factor evidence universe size is inconsistent on {decision}")
+        for column in ("lookback_date", "entry_date", "exit_date"):
+            if set(group[column]) != {period[column]}:
+                raise ValueError(f"factor evidence {column} is inconsistent on {decision}")
+        if not np.allclose(group["reversal_score"], -group["past_return"], rtol=1e-12, atol=1e-14):
+            raise ValueError(f"factor evidence reversal scores are inconsistent on {decision}")
+
+        ordered = group.sort_values(["past_return", "symbol"], kind="mergesort")
+        expected_long = set(ordered.iloc[:len(period["long_symbols"])]["symbol"])
+        expected_short = set(ordered.iloc[-len(period["short_symbols"]):]["symbol"])
+        actual_long = set(group.loc[group["selected_side"] == "long", "symbol"])
+        actual_short = set(group.loc[group["selected_side"] == "short", "symbol"])
+        if actual_long != expected_long or actual_long != set(period["long_symbols"]):
+            raise ValueError(f"factor evidence long selection is inconsistent on {decision}")
+        if actual_short != expected_short or actual_short != set(period["short_symbols"]):
+            raise ValueError(f"factor evidence short selection is inconsistent on {decision}")
+        selected = actual_long | actual_short
+        if not group.loc[~group["symbol"].isin(selected), "target_weight"].eq(0.0).all():
+            raise ValueError(f"factor evidence non-selected weights are nonzero on {decision}")
+        period_evidence = period["selected_evidence"]
+        for row in group.loc[group["symbol"].isin(selected)].itertuples(index=False):
+            if not _close(row.target_weight, period_evidence[row.symbol]["target_weight"]):
+                raise ValueError(f"factor evidence selected weight is inconsistent for {row.symbol}")
+
+        priced = group["entry_price"].notna() & group["exit_price"].notna()
+        expected_forward = group.loc[priced, "exit_price"] / group.loc[priced, "entry_price"] - 1.0
+        if not np.allclose(group.loc[priced, "forward_return"], expected_forward, rtol=1e-10, atol=1e-12):
+            raise ValueError(f"factor evidence forward returns are inconsistent on {decision}")
+        if group.loc[~priced, "forward_return"].notna().any():
+            raise ValueError(f"factor evidence has forward returns without endpoint prices on {decision}")
+        sample_size = int(group["forward_return"].notna().sum())
+        if sample_size != period["rank_ic_sample_size"]:
+            raise ValueError(f"factor evidence Rank IC sample size is inconsistent on {decision}")
+        rank_ic = _rank_ic(group.set_index("symbol")["reversal_score"], group.set_index("symbol")["forward_return"])
+        if rank_ic is None:
+            if period["rank_ic"] is not None:
+                raise ValueError(f"factor evidence Rank IC is inconsistent on {decision}")
+        elif period["rank_ic"] is None or not _close(rank_ic, period["rank_ic"]):
+            raise ValueError(f"factor evidence Rank IC is inconsistent on {decision}")
+
+
+def validate_result(payload: dict[str, Any], evidence_path: str | Path | None = None) -> None:
     if not isinstance(payload, dict):
         raise ValueError("result must be an object")
     _assert_finite_json(payload)
@@ -129,6 +226,7 @@ def validate_result(payload: dict[str, Any]) -> None:
         raise ValueError("periods must be a non-empty list")
     if compute_run_id(payload) != payload["run_id"]:
         raise ValueError("run_id does not match canonical result content")
+    _validate_evidence_metadata(payload)
 
     config = payload["config"]
     cost_rate = float(config["cost_rate"])
@@ -225,6 +323,8 @@ def validate_result(payload: dict[str, Any]) -> None:
                 raise ValueError(f"metrics.{key} is inconsistent")
         elif actual is None or not _close(actual, expected):
             raise ValueError(f"metrics.{key} is inconsistent")
+    if evidence_path is not None:
+        _validate_factor_evidence(payload, evidence_path)
 
 
 def validate_snapshot_result(payload: dict[str, Any]) -> None:

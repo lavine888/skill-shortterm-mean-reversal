@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
@@ -82,6 +82,7 @@ def run_backtest(
     config: StrategyConfig | None = None,
     source: str = "file",
     calendar: Any = None,
+    evidence_sink: Callable[[pd.DataFrame], None] | None = None,
 ) -> dict[str, Any]:
     cfg = config or StrategyConfig()
     provided_columns = set(panel.attrs.get("provided_columns", panel.columns))
@@ -126,6 +127,28 @@ def run_backtest(
         scores = pd.Series({symbol: values["reversal_score"] for symbol, values in snapshot["scores"].items()})
         rank_sample = scores.dropna().index.intersection(all_forward.dropna().index)
         rank_ic = _rank_ic(scores, all_forward)
+
+        if evidence_sink is not None:
+            long_symbols = set(snapshot["long_symbols"])
+            short_symbols = set(snapshot["short_symbols"])
+            evidence_frame = pd.DataFrame([
+                {
+                    "decision_date": decision.strftime("%Y%m%d"),
+                    "lookback_date": snapshot["lookback_date"],
+                    "entry_date": entry.strftime("%Y%m%d"),
+                    "exit_date": exit_date.strftime("%Y%m%d"),
+                    "symbol": symbol,
+                    "past_return": values["past_return"],
+                    "reversal_score": values["reversal_score"],
+                    "selected_side": "long" if symbol in long_symbols else ("short" if symbol in short_symbols else "none"),
+                    "target_weight": snapshot["weights"].get(symbol, 0.0),
+                    "entry_price": float(entry_prices[symbol]) if symbol in entry_prices.index and pd.notna(entry_prices[symbol]) else None,
+                    "exit_price": float(exit_prices[symbol]) if symbol in exit_prices.index and pd.notna(exit_prices[symbol]) else None,
+                    "forward_return": float(all_forward[symbol]) if symbol in all_forward.index and pd.notna(all_forward[symbol]) else None,
+                }
+                for symbol, values in snapshot["scores"].items()
+            ]).sort_values("symbol", kind="mergesort").reset_index(drop=True)
+            evidence_sink(evidence_frame)
 
         target_weights = snapshot["weights"]
         executed_weights: dict[str, float] = {}

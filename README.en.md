@@ -7,9 +7,9 @@
 Point-in-time signals · Drift-aware turnover · PandaData · Auditable outputs
 
 [![CI](https://github.com/lavine888/skill-shortterm-mean-reversal/actions/workflows/validate.yml/badge.svg)](https://github.com/lavine888/skill-shortterm-mean-reversal/actions/workflows/validate.yml)
-[![Version](https://img.shields.io/badge/version-0.4.0-2563EB)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.5.0-2563EB)](./CHANGELOG.md)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-30%20passed-2E7D32)](./tests)
+[![Tests](https://img.shields.io/badge/tests-33%20passed-2E7D32)](./tests)
 [![PandaData](https://img.shields.io/badge/PandaData-0.0.12-0F766E)](./VALIDATION.md)
 [![License](https://img.shields.io/badge/license-GPL--3.0-4B5563)](./LICENSE)
 
@@ -83,7 +83,7 @@ The live-data run used `panda_data 0.0.12` and completed against the full Shangh
 | Complete non-overlapping periods | **48** |
 | Forward-return coverage | **99.998%** |
 | Rank IC coverage | **99.976%** |
-| Local test suite | **30 passed** |
+| Local test suite | **33 passed** |
 
 ### 2024 Research Snapshot
 
@@ -111,10 +111,11 @@ python -m pytest -q
 
 python scripts/backtest.py --provider demo `
   --start 20220101 --end 20241231 `
+  --evidence-output output/demo-evidence.parquet `
   --output output/demo.json
 
-python scripts/validate.py output/demo.json
-python scripts/summarize.py output/demo.json
+python scripts/validate.py output/demo.json --evidence output/demo-evidence.parquet
+python scripts/summarize.py output/demo.json --evidence output/demo-evidence.parquet
 ```
 
 The demo is synthetic and deterministic. It validates the software contract, not the strategy.
@@ -143,10 +144,11 @@ python scripts/backtest.py --provider pandadata --all-a `
   --cost-rate 0.001 `
   --cache-dir output/panda-cache `
   --delisting-exit-policy last_available_close `
+  --evidence-output output/backtest-2024-evidence.parquet `
   --output output/backtest-2024.json
 
-python scripts/validate.py output/backtest-2024.json
-python scripts/summarize.py output/backtest-2024.json
+python scripts/validate.py output/backtest-2024.json --evidence output/backtest-2024-evidence.parquet
+python scripts/summarize.py output/backtest-2024.json --evidence output/backtest-2024-evidence.parquet
 ```
 
 PandaData remains `experimental`: the current price response does not expose historical point-in-time suspension, ST, limit-up/limit-down or borrow-availability fields.
@@ -185,6 +187,8 @@ Every validated result contains:
 - Per-symbol past return, target/executed weight and entry/exit price;
 - Fill status, forced-delisting status, coverage, Rank IC, turnover and costs;
 - Recomputable aggregate metrics and a deterministic `run_id`.
+
+With `--evidence-output`, the complete cross-sectional Parquet is bound to the JSON by schema, row count and SHA-256. The validator independently reconstructs both tails and recomputes Rank IC.
 
 The validator rejects non-finite numbers, invalid chronology, inconsistent returns or costs, missing evidence and tampered run IDs. JSON writes use atomic replacement.
 

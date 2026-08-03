@@ -57,8 +57,9 @@ Install and run the deterministic demo first:
 
 ```powershell
 pip install -r requirements.txt
-python scripts/backtest.py --provider demo --start 20220101 --end 20241231 --output output/demo.json
-python scripts/validate.py output/demo.json
+python scripts/backtest.py --provider demo --start 20220101 --end 20241231 `
+  --evidence-output output/demo-evidence.parquet --output output/demo.json
+python scripts/validate.py output/demo.json --evidence output/demo-evidence.parquet
 ```
 
 Run a frozen CSV or Parquet panel containing `date`, `symbol`, and post-adjusted `close`:
@@ -76,12 +77,13 @@ $env:PANDA_DATA_PASSWORD = "your-password"
 python scripts/backtest.py --provider pandadata --all-a `
   --start 20210101 --end 20251231 `
   --cache-dir output/panda-cache `
-  --delisting-exit-policy last_available_close --output output/backtest.json
+  --delisting-exit-policy last_available_close `
+  --evidence-output output/factor-evidence.parquet --output output/backtest.json
 ```
 
 ## Output Contract
 
-The JSON records the complete strategy configuration, source status, input-panel SHA-256, request-manifest SHA-256, deterministic run ID, aggregate performance, and each rebalance period. Per-symbol evidence includes target and executed weights, entry and exit prices, fill statuses and forward returns, allowing the validator to recompute period return and cost. PandaData remains `experimental` until its trading-status fields and historical delisted universe are verified against the live SDK.
+The JSON records the complete strategy configuration, source status, input-panel SHA-256, request-manifest SHA-256, deterministic run ID, aggregate performance, and each rebalance period. Per-symbol evidence includes target and executed weights, entry and exit prices, fill statuses and forward returns, allowing the validator to recompute period return and cost. An optional full cross-sectional Parquet is bound by schema, counts and SHA-256 so the validator can reconstruct tails and Rank IC. PandaData remains `experimental` until its trading-status fields and historical delisted universe are verified against the live SDK.
 
 Use `scripts/summarize.py` only after `scripts/validate.py` passes. The explicit delisting policy assumes execution at the last available close before a confirmed delisting; the default policy remains `error`.
 
