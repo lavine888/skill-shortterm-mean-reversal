@@ -42,16 +42,50 @@ def calculate_stats(period_returns: list[float], hold_days: int) -> dict[str, fl
     }
 
 
-def _status_panel(work: pd.DataFrame, dates: pd.DatetimeIndex) -> pd.DataFrame:
-    executable = (~work["suspended"]) & (~work["is_st"]) & work["tradable"]
-    status = work.assign(_executable=executable).pivot(
-        index="date", columns="symbol", values="_executable"
-    )
-    return status.reindex(dates).fillna(False).astype(bool)
+def _boolean_panel(
+    work: pd.DataFrame, dates: pd.DatetimeIndex, column: str, fill: bool,
+) -> pd.DataFrame:
+    panel = work.pivot(index="date", columns="symbol", values=column)
+    return panel.reindex(dates).fillna(fill).astype(bool)
+
+
+def _numeric_panel(
+    work: pd.DataFrame, dates: pd.DatetimeIndex, columns: pd.Index, column: str,
+) -> pd.DataFrame:
+    if column not in work:
+        return pd.DataFrame(np.nan, index=dates, columns=columns)
+    return work.pivot(index="date", columns="symbol", values=column).reindex(index=dates, columns=columns)
+
+
+def _limit_block_reason(
+    weight: float, action: str, price: float | None,
+    limit_up: float | None, limit_down: float | None,
+) -> str | None:
+    if price is None:
+        return "missing_price"
+    at_limit_up = limit_up is not None and price >= limit_up * (1.0 - 1e-8)
+    at_limit_down = limit_down is not None and price <= limit_down * (1.0 + 1e-8)
+    if action == "entry":
+        if weight > 0 and at_limit_up:
+            return "limit_up"
+        if weight < 0 and at_limit_down:
+            return "limit_down"
+    elif action == "exit":
+        if weight > 0 and at_limit_down:
+            return "limit_down"
+        if weight < 0 and at_limit_up:
+            return "limit_up"
+    return None
+
+
+def _optional_float(values: pd.Series, symbol: str) -> float | None:
+    value = values.get(symbol, np.nan)
+    return float(value) if pd.notna(value) and np.isfinite(float(value)) else None
 
 
 def build_source_context(work: pd.DataFrame, dates: pd.DatetimeIndex) -> dict[str, Any]:
     digest_columns = ["date", "symbol", "close", "suspended", "is_st", "tradable"]
+    digest_columns.extend(column for column in ("limit_up", "limit_down") if column in work)
     if "de_listed_date" in work:
         digest_columns.append("de_listed_date")
     digest_frame = work[digest_columns].copy()
@@ -82,6 +116,7 @@ def run_backtest(
     config: StrategyConfig | None = None,
     source: str = "file",
     calendar: Any = None,
+    calendar_source: str | None = None,
     evidence_sink: Callable[[pd.DataFrame], None] | None = None,
 ) -> dict[str, Any]:
     cfg = config or StrategyConfig()
@@ -93,7 +128,12 @@ def run_backtest(
         raise ValueError("start must be on or before end")
     dates = market_dates(work, calendar)
     close = work.pivot(index="date", columns="symbol", values="close").reindex(dates)
-    executable = _status_panel(work, dates)
+    suspended = _boolean_panel(work, dates, "suspended", True)
+    is_st = _boolean_panel(work, dates, "is_st", False)
+    tradable = _boolean_panel(work, dates, "tradable", False)
+    executable = (~suspended) & (~is_st) & tradable
+    limit_up = _numeric_panel(work, dates, close.columns, "limit_up")
+    limit_down = _numeric_panel(work, dates, close.columns, "limit_down")
     date_frames = {
         pd.Timestamp(date): frame.set_index("symbol")
         for date, frame in work.groupby("date", sort=False)
@@ -122,11 +162,109 @@ def run_backtest(
             visible_symbols=visible_symbols,
         )
         entry_prices, exit_prices = close.loc[entry], close.loc[exit_date]
-        entry_status, exit_status = executable.loc[entry], executable.loc[exit_date]
+        entry_executable, exit_executable = executable.loc[entry], executable.loc[exit_date]
+        entry_suspended, exit_suspended = suspended.loc[entry], suspended.loc[exit_date]
+        entry_is_st, exit_is_st = is_st.loc[entry], is_st.loc[exit_date]
+        entry_tradable, exit_tradable = tradable.loc[entry], tradable.loc[exit_date]
+        entry_limit_up, exit_limit_up = limit_up.loc[entry], limit_up.loc[exit_date]
+        entry_limit_down, exit_limit_down = limit_down.loc[entry], limit_down.loc[exit_date]
         all_forward = exit_prices / entry_prices - 1.0
         scores = pd.Series({symbol: values["reversal_score"] for symbol, values in snapshot["scores"].items()})
         rank_sample = scores.dropna().index.intersection(all_forward.dropna().index)
         rank_ic = _rank_ic(scores, all_forward)
+
+        target_weights = snapshot["weights"]
+        executed_weights: dict[str, float] = {}
+        evidence: dict[str, dict[str, Any]] = {}
+        unresolved_exit: dict[str, str] = {}
+        forced_exit_symbols: set[str] = set()
+        for symbol, target_weight in target_weights.items():
+            entry_price_value = _optional_float(entry_prices, symbol)
+            entry_up_value = _optional_float(entry_limit_up, symbol)
+            entry_down_value = _optional_float(entry_limit_down, symbol)
+            if entry_price_value is None:
+                entry_block_reason = "missing_price"
+            elif bool(entry_suspended.get(symbol, True)):
+                entry_block_reason = "suspended"
+            elif bool(entry_is_st.get(symbol, False)):
+                entry_block_reason = "st"
+            elif not bool(entry_tradable.get(symbol, False)) or not bool(entry_executable.get(symbol, False)):
+                entry_block_reason = "non_tradable"
+            else:
+                entry_block_reason = _limit_block_reason(
+                    target_weight, "entry", entry_price_value,
+                    entry_up_value, entry_down_value,
+                )
+            can_enter = entry_block_reason is None
+            executed_weight = float(target_weight) if can_enter else 0.0
+            exit_price_value = _optional_float(exit_prices, symbol)
+            exit_up_value = _optional_float(exit_limit_up, symbol)
+            exit_down_value = _optional_float(exit_limit_down, symbol)
+            if not can_enter:
+                exit_block_reason = "not_applicable"
+            elif exit_price_value is None:
+                exit_block_reason = "missing_price"
+            elif bool(exit_suspended.get(symbol, True)):
+                exit_block_reason = "suspended"
+            elif bool(exit_is_st.get(symbol, False)):
+                exit_block_reason = "st"
+            elif not bool(exit_tradable.get(symbol, False)) or not bool(exit_executable.get(symbol, False)):
+                exit_block_reason = "non_tradable"
+            else:
+                exit_block_reason = _limit_block_reason(
+                    target_weight, "exit", exit_price_value,
+                    exit_up_value, exit_down_value,
+                )
+            can_exit = can_enter and exit_block_reason is None
+            actual_exit_date = exit_date if can_exit else None
+            actual_exit_price = exit_price_value if can_exit else None
+            exit_label = "filled" if can_exit else ("not_applicable" if not can_enter else "unresolved")
+            if can_enter and not can_exit and cfg.delisting_exit_policy == "last_available_close" and "de_listed_date" in work:
+                own = work.loc[work["symbol"] == symbol]
+                delisted_values = pd.to_datetime(own["de_listed_date"], format="mixed", errors="coerce").dropna()
+                delisted_date = delisted_values.iloc[0] if not delisted_values.empty else None
+                candidates = own.loc[(own["date"] >= entry) & (own["date"] < delisted_date)] if delisted_date is not None and entry < delisted_date <= exit_date else own.iloc[0:0]
+                if not candidates.empty:
+                    forced = candidates.sort_values("date").iloc[-1]
+                    forced_executable = not bool(forced["suspended"]) and not bool(forced["is_st"]) and bool(forced["tradable"])
+                    forced_price = float(forced["close"])
+                    forced_up = float(forced["limit_up"]) if "limit_up" in forced and pd.notna(forced["limit_up"]) else None
+                    forced_down = float(forced["limit_down"]) if "limit_down" in forced and pd.notna(forced["limit_down"]) else None
+                    forced_limit_reason = _limit_block_reason(
+                        target_weight, "exit", forced_price, forced_up, forced_down,
+                    )
+                    if forced_executable and forced_limit_reason is None:
+                        actual_exit_date = pd.Timestamp(forced["date"])
+                        actual_exit_price = forced_price
+                        can_exit = True
+                        exit_label = "forced_delisting_exit"
+                        exit_block_reason = None
+                        forced_exit_symbols.add(symbol)
+            if can_enter and not can_exit:
+                unresolved_exit[symbol] = exit_block_reason or "unresolved"
+            forward_return = actual_exit_price / entry_price_value - 1.0 if can_exit else None
+            if can_enter:
+                executed_weights[symbol] = executed_weight
+            evidence[symbol] = {
+                **snapshot["scores"][symbol],
+                "target_weight": float(target_weight),
+                "executed_weight": executed_weight,
+                "entry_price": entry_price_value if can_enter else None,
+                "exit_price": actual_exit_price,
+                "forward_return": forward_return,
+                "entry_status": "filled" if can_enter else "unfilled",
+                "entry_block_reason": entry_block_reason,
+                "exit_status": exit_label,
+                "exit_block_reason": exit_block_reason,
+                "actual_exit_date": actual_exit_date.strftime("%Y%m%d") if actual_exit_date is not None else None,
+            }
+        if unresolved_exit:
+            sample = ", ".join(
+                f"{symbol}:{unresolved_exit[symbol]}" for symbol in sorted(unresolved_exit)[:10]
+            )
+            raise ValueError(
+                f"cannot value or exit {len(unresolved_exit)} executed positions on {exit_date.date()}: {sample}"
+            )
 
         if evidence_sink is not None:
             long_symbols = set(snapshot["long_symbols"])
@@ -142,64 +280,25 @@ def run_backtest(
                     "reversal_score": values["reversal_score"],
                     "selected_side": "long" if symbol in long_symbols else ("short" if symbol in short_symbols else "none"),
                     "target_weight": snapshot["weights"].get(symbol, 0.0),
-                    "entry_price": float(entry_prices[symbol]) if symbol in entry_prices.index and pd.notna(entry_prices[symbol]) else None,
-                    "exit_price": float(exit_prices[symbol]) if symbol in exit_prices.index and pd.notna(exit_prices[symbol]) else None,
+                    "entry_price": _optional_float(entry_prices, symbol),
+                    "entry_suspended": bool(entry_suspended.get(symbol, True)),
+                    "entry_is_st": bool(entry_is_st.get(symbol, False)),
+                    "entry_tradable": bool(entry_tradable.get(symbol, False)),
+                    "entry_limit_up": _optional_float(entry_limit_up, symbol),
+                    "entry_limit_down": _optional_float(entry_limit_down, symbol),
+                    "entry_block_reason": evidence.get(symbol, {}).get("entry_block_reason"),
+                    "exit_price": _optional_float(exit_prices, symbol),
+                    "exit_suspended": bool(exit_suspended.get(symbol, True)),
+                    "exit_is_st": bool(exit_is_st.get(symbol, False)),
+                    "exit_tradable": bool(exit_tradable.get(symbol, False)),
+                    "exit_limit_up": _optional_float(exit_limit_up, symbol),
+                    "exit_limit_down": _optional_float(exit_limit_down, symbol),
+                    "exit_block_reason": evidence.get(symbol, {}).get("exit_block_reason"),
                     "forward_return": float(all_forward[symbol]) if symbol in all_forward.index and pd.notna(all_forward[symbol]) else None,
                 }
                 for symbol, values in snapshot["scores"].items()
             ]).sort_values("symbol", kind="mergesort").reset_index(drop=True)
             evidence_sink(evidence_frame)
-
-        target_weights = snapshot["weights"]
-        executed_weights: dict[str, float] = {}
-        evidence: dict[str, dict[str, Any]] = {}
-        unresolved_exit: list[str] = []
-        forced_exit_symbols: set[str] = set()
-        for symbol, target_weight in target_weights.items():
-            can_enter = symbol in entry_prices.index and pd.notna(entry_prices[symbol]) and bool(entry_status.get(symbol, False))
-            executed_weight = float(target_weight) if can_enter else 0.0
-            can_exit = (
-                can_enter and symbol in exit_prices.index and pd.notna(exit_prices[symbol])
-                and bool(exit_status.get(symbol, False))
-            )
-            actual_exit_date = exit_date if can_exit else None
-            actual_exit_price = float(exit_prices[symbol]) if can_exit else None
-            exit_label = "filled" if can_exit else ("not_applicable" if not can_enter else "unresolved")
-            if can_enter and not can_exit and cfg.delisting_exit_policy == "last_available_close" and "de_listed_date" in work:
-                own = work.loc[work["symbol"] == symbol]
-                delisted_values = pd.to_datetime(own["de_listed_date"], format="mixed", errors="coerce").dropna()
-                delisted_date = delisted_values.iloc[0] if not delisted_values.empty else None
-                candidates = own.loc[(own["date"] >= entry) & (own["date"] < delisted_date)] if delisted_date is not None and entry < delisted_date <= exit_date else own.iloc[0:0]
-                if not candidates.empty:
-                    forced = candidates.sort_values("date").iloc[-1]
-                    forced_executable = not bool(forced["suspended"]) and not bool(forced["is_st"]) and bool(forced["tradable"])
-                    if forced_executable:
-                        actual_exit_date = pd.Timestamp(forced["date"])
-                        actual_exit_price = float(forced["close"])
-                        can_exit = True
-                        exit_label = "forced_delisting_exit"
-                        forced_exit_symbols.add(symbol)
-            if can_enter and not can_exit:
-                unresolved_exit.append(symbol)
-            forward_return = actual_exit_price / float(entry_prices[symbol]) - 1.0 if can_exit else None
-            if can_enter:
-                executed_weights[symbol] = executed_weight
-            evidence[symbol] = {
-                **snapshot["scores"][symbol],
-                "target_weight": float(target_weight),
-                "executed_weight": executed_weight,
-                "entry_price": float(entry_prices[symbol]) if can_enter else None,
-                "exit_price": actual_exit_price,
-                "forward_return": forward_return,
-                "entry_status": "filled" if can_enter else "unfilled",
-                "exit_status": exit_label,
-                "actual_exit_date": actual_exit_date.strftime("%Y%m%d") if actual_exit_date is not None else None,
-            }
-        if unresolved_exit:
-            sample = ", ".join(sorted(unresolved_exit)[:10])
-            raise ValueError(
-                f"cannot value or exit {len(unresolved_exit)} executed positions on {exit_date.date()}: {sample}"
-            )
 
         traded_symbols = sorted(set(executed_weights) | set(previous_drifted_weights))
         traded_notional = float(sum(
@@ -274,8 +373,11 @@ def run_backtest(
             "suspended_flag": "suspended" in provided_columns,
             "st_flag": "is_st" in provided_columns,
             "tradable_flag": "tradable" in provided_columns,
+            "trade_status": "trade_status" in provided_columns,
+            "limit_prices": {"limit_up", "limit_down"}.issubset(provided_columns),
+            "historical_name": "name" in provided_columns,
             "delisting_date": "de_listed_date" in provided_columns,
-            "calendar_source": "explicit" if calendar is not None else "panel_date_union",
+            "calendar_source": calendar_source or ("explicit" if calendar is not None else "panel_date_union"),
         },
         "metrics": {
             **calculate_stats(net_returns, cfg.hold_days),

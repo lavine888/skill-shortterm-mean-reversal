@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 import sys
 from pathlib import Path
@@ -26,8 +27,13 @@ def main() -> None:
     positive_periods = sum(period["net_return"] > 0 for period in periods)
     long_contributions = []
     short_contributions = []
+    entry_blocks: Counter[str] = Counter()
     for period in periods:
         evidence = period["selected_evidence"].values()
+        entry_blocks.update(
+            item["entry_block_reason"] for item in evidence
+            if item["entry_block_reason"] is not None
+        )
         long_contributions.append(sum(
             item["executed_weight"] * item["forward_return"]
             for item in evidence
@@ -60,6 +66,7 @@ def main() -> None:
         "average_short_contribution": float(np.mean(short_contributions)),
         "sum_period_costs": float(sum(period["cost"] for period in periods)),
         "forced_delisting_exits": payload["metrics"]["forced_delisting_exits"],
+        "entry_blocks": dict(sorted(entry_blocks.items())),
         "halves": halves,
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2))

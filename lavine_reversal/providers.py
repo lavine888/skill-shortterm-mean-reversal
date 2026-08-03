@@ -227,6 +227,25 @@ class PandaDataProvider:
             mask = symbols.str.match(r"^\d{6}\.(SH|SZ)$") & listed.le(range_end) & (delisted.isna() | delisted.ge(range_start))
         return sorted(symbols.loc[mask].unique().tolist())
 
+    def load_calendar(self, start: str, end: str) -> pd.DatetimeIndex:
+        frame = self._call(
+            "get_trade_cal", start_date=pd.Timestamp(start).strftime("%Y%m%d"),
+            end_date=pd.Timestamp(end).strftime("%Y%m%d"), exchange="SH",
+            is_trading_day=None, fields=["nature_date", "is_trade", "exchange"],
+        )
+        required = {"nature_date", "is_trade"}
+        missing = sorted(required - set(frame.columns))
+        if missing:
+            raise RuntimeError("get_trade_cal missing columns: " + ", ".join(missing))
+        raw_dates = frame.loc[
+            pd.to_numeric(frame["is_trade"], errors="coerce").eq(1), "nature_date"
+        ].astype("string").str.replace(r"\.0$", "", regex=True)
+        dates = pd.to_datetime(raw_dates, format="%Y%m%d", errors="coerce").dropna().dt.normalize()
+        calendar = pd.DatetimeIndex(dates.drop_duplicates().sort_values())
+        if calendar.empty:
+            raise RuntimeError("get_trade_cal returned no SH trading sessions")
+        return calendar
+
     def load(self, start: str, end: str, symbols: list[str] | None = None, universe_as_of: str | None = None) -> pd.DataFrame:
         self._delisted_dates = {}
         universe = [symbol.upper() for symbol in symbols] if symbols else self._all_a(start, end, universe_as_of)
@@ -238,33 +257,52 @@ class PandaDataProvider:
             for batch in self._batches(universe):
                 frame = self._call(
                     "get_stock_daily_post", symbol=batch, start_date=chunk_start,
-                    end_date=chunk_end, fields=["symbol", "date", "close"],
+                    end_date=chunk_end,
+                    fields=["symbol", "date", "close", "trade_status", "limit_up", "limit_down", "name"],
+                    st=True,
                 )
                 if not frame.empty:
                     frames.append(frame)
         if not frames:
             raise RuntimeError("PandaData returned no post-adjusted daily prices")
         combined = pd.concat(frames, ignore_index=True)
+        trading_required = {"trade_status", "limit_up", "limit_down", "name"}
+        trading_missing = sorted(trading_required - set(combined.columns))
+        if trading_missing:
+            raise RuntimeError("get_stock_daily_post missing trading columns: " + ", ".join(trading_missing))
         exact = combined.drop_duplicates().copy()
         conflicting = exact.duplicated(["date", "symbol"], keep=False)
         if conflicting.any():
             sample = exact.loc[conflicting, ["date", "symbol"]].iloc[0]
             raise RuntimeError(f"conflicting PandaData daily rows: {sample['date']} {sample['symbol']}")
         exact["de_listed_date"] = exact["symbol"].astype(str).str.upper().map(self._delisted_dates)
+        exact["suspended"] = pd.to_numeric(exact["trade_status"], errors="coerce").ne(0)
+        exact["is_st"] = exact["name"].astype("string").str.upper().str.contains("ST", regex=False, na=False)
+        exact["tradable"] = ~exact["suspended"]
         result = normalize_panel(exact)
-        result.attrs["provided_columns"] = ["date", "symbol", "close", "de_listed_date"]
+        result.attrs["provided_columns"] = [
+            "date", "symbol", "close", "de_listed_date", "suspended", "is_st",
+            "tradable", "limit_up", "limit_down", "trade_status", "name",
+        ]
         result.attrs["provider_context"] = {
             "provider": "PandaData",
             "sdk_version": self.sdk_version,
             "requested_universe_size": len(universe),
             "universe_sha256": hashlib.sha256("\n".join(sorted(universe)).encode("ascii")).hexdigest(),
+        }
+        self.bind_runtime_context(result)
+        return result
+
+    def bind_runtime_context(self, frame: pd.DataFrame) -> None:
+        context = dict(frame.attrs.get("provider_context", {}))
+        context.update({
             "cache_enabled": self.cache_dir is not None,
             "response_count": len(self._response_entries),
             "response_manifest_sha256": hashlib.sha256(
                 "\n".join(sorted(self._response_entries)).encode("ascii")
             ).hexdigest(),
-        }
-        return result
+        })
+        frame.attrs["provider_context"] = context
 
     def cache_diagnostics(self) -> dict[str, int]:
         return {"hits": self._cache_hits, "misses": self._cache_misses}

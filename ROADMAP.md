@@ -1,5 +1,15 @@
 # Roadmap
 
+## P0: Deferred Exit and Daily NAV
+
+- Carry positions that cannot exit at limit-down, limit-up or suspension instead of assuming a fill.
+- Mark blocked positions daily and defer liquidation until the first directionally executable session.
+- Prevent new target weights from spending capital still locked in carried positions.
+- Replace sequential five-day period compounding with daily NAV and explicit order/position ledgers.
+- Preserve every blocked order, retry date, fill assumption and cost in auditable evidence.
+
+Until this exists, strict full-market runs intentionally fail closed on the first unresolved exit rather than publish an execution-biased return.
+
 ## Completed in 0.5.0: Independent Factor Evidence
 
 - Materialized a frozen Parquet table for every decision-date cross-section.
@@ -11,11 +21,16 @@ The remaining work is to freeze and publish a provider-permitted multi-year evid
 
 ## P1: Data and Execution Evidence
 
-- Freeze an official SH/SZ market calendar instead of relying on panel-date union.
-- Add historical point-in-time suspension, ST and limit-up/limit-down states.
 - Validate the historical universe against an independent exchange source.
 - Add delisting announcement/last-trading-day evidence visible before execution.
 - Model borrow availability, fees and recalls for the short leg.
+
+## Completed in 0.6.0: Calendar and Daily Trading States
+
+- Integrated and cached the official PandaData SH trading calendar.
+- Mapped daily `trade_status`, historical ST names and adjusted limit prices.
+- Added side-aware entry and exit constraints for limit-up and limit-down sessions.
+- Bound trading states, limit prices and block reasons into JSON and full factor evidence.
 
 ## P1: Research Validation
 

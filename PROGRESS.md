@@ -1,6 +1,6 @@
 # Q58 交付状态
 
-更新时间：2026-08-03，版本 0.5.0
+更新时间：2026-08-03，版本 0.6.0
 
 ## 已完成
 
@@ -16,15 +16,17 @@
 - PandaData 原子请求缓存、响应 manifest 和中断恢复。
 - qsh-form/frontmatter 合规校验与中英双版本 README。
 - 完整横截面因子证据 Parquet，以及分组和 Rank IC 独立重算。
+- PandaData 官方交易日历、停牌/ST 和方向性涨跌停成交约束。
 
 ## 已验证
 
-- `py -3.11 -m pytest -q`：33 passed。
+- `py -3.11 -m pytest -q`：40 passed。
 - 单元测试覆盖信号、点时、缺失成交、漂移换手、退市退出、脏数据、结果篡改、PandaData 缓存和发布包。
 - demo 端到端：156 个期间，JSON contract 校验通过。
 - PandaData 全市场 2024-12-31 因子截面：5,122 只请求，5,121 只有效。
 - PandaData 全市场 2024 回测：48 期，严格结果校验通过；详见 `VALIDATION.md`。
 - PandaData 真实缓存冒烟：首次 miss、二次 hit，schema 4 run ID 保持一致。
+- PandaData 真实 30 股 2024 回测：官方日历与交易状态生效，捕获 1 次跌停空头进场阻断。
 - demo 是合成数据，不是策略收益证据。
 
 ## 待完成

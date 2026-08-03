@@ -56,3 +56,25 @@ def test_rank_ic_tampering_fails_even_after_rehash(tmp_path):
     tampered["run_id"] = compute_run_id(tampered)
     with pytest.raises(ValueError, match="Rank IC is inconsistent"):
         validate_result(tampered, evidence_path=path)
+
+
+def test_directional_limit_block_is_bound_to_full_evidence(tmp_path):
+    panel = DemoProvider(n_symbols=30).load("2024-01-01", "2024-06-30")
+    config = StrategyConfig(min_universe=20)
+    baseline = run_backtest(panel, "2024-02-01", "2024-06-28", config, source="demo")
+    first = baseline["periods"][0]
+    symbol = first["long_symbols"][0]
+    entry = pd.Timestamp(first["entry_date"])
+    panel["limit_up"] = panel["close"] * 2.0
+    panel["limit_down"] = panel["close"] * 0.5
+    mask = (panel["date"] == entry) & (panel["symbol"] == symbol)
+    panel.loc[mask, "limit_up"] = panel.loc[mask, "close"]
+    path = tmp_path / "limited-evidence.parquet"
+    with FactorEvidenceWriter(path) as writer:
+        result = run_backtest(
+            panel, "2024-02-01", "2024-06-28", config,
+            source="demo", evidence_sink=writer.write,
+        )
+    attach_factor_evidence(result, writer.metadata())
+    validate_result(result, evidence_path=path)
+    assert result["periods"][0]["selected_evidence"][symbol]["entry_block_reason"] == "limit_up"

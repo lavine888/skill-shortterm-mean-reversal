@@ -41,6 +41,10 @@ def normalize_panel(panel: pd.DataFrame) -> pd.DataFrame:
     work["date"] = pd.to_datetime(work["date"], errors="coerce").dt.normalize()
     work["symbol"] = work["symbol"].astype("string").str.strip().str.upper()
     work["close"] = pd.to_numeric(work["close"], errors="coerce")
+    for column in ("limit_up", "limit_down"):
+        if column in work:
+            work[column] = pd.to_numeric(work[column], errors="coerce")
+            work.loc[~np.isfinite(work[column]) | ~work[column].gt(0), column] = np.nan
     if work["date"].isna().any() or work["symbol"].isna().any() or work["symbol"].eq("").any():
         raise ValueError("date and symbol must not be null")
     if work["date"].dt.dayofweek.ge(5).any():

@@ -7,9 +7,9 @@
 Point-in-time signals · Drift-aware turnover · PandaData · Auditable outputs
 
 [![CI](https://github.com/lavine888/skill-shortterm-mean-reversal/actions/workflows/validate.yml/badge.svg)](https://github.com/lavine888/skill-shortterm-mean-reversal/actions/workflows/validate.yml)
-[![Version](https://img.shields.io/badge/version-0.5.0-2563EB)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.6.0-2563EB)](./CHANGELOG.md)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-33%20passed-2E7D32)](./tests)
+[![Tests](https://img.shields.io/badge/tests-40%20passed-2E7D32)](./tests)
 [![PandaData](https://img.shields.io/badge/PandaData-0.0.12-0F766E)](./VALIDATION.md)
 [![License](https://img.shields.io/badge/license-GPL--3.0-4B5563)](./LICENSE)
 
@@ -83,9 +83,10 @@ The live-data run used `panda_data 0.0.12` and completed against the full Shangh
 | Complete non-overlapping periods | **48** |
 | Forward-return coverage | **99.998%** |
 | Rank IC coverage | **99.976%** |
-| Local test suite | **33 passed** |
+| Local test suite | **40 passed** |
+| 0.6.0 strict full-market execution | **9 blocked exits in period one; fail-closed** |
 
-### 2024 Research Snapshot
+### 2024 Historical Research Snapshot (schema 3)
 
 | Metric | Result |
 |---|---:|
@@ -97,7 +98,9 @@ The live-data run used `panda_data 0.0.12` and completed against the full Shangh
 | Maximum drawdown | `-6.17%` |
 | Mean Rank IC | `0.0444` |
 
-This is a one-year research result, not evidence of durable alpha. The first half had Rank IC `-0.0096`; the second half had `0.0984`. The factor is visibly regime-sensitive.
+This one-year historical result did not model directional limit-up/limit-down execution and is not the current strict result. Under the 0.6.0 official calendar and daily trading states, period one already contained one long position blocked at limit-down and eight short positions blocked from covering at limit-up. The run failed closed as designed. The `24.59%` figure above must not be interpreted as executable performance.
+
+The 0.6.0 strict 30-stock run completed 48 periods: `6.29%` gross, `-2.19%` net after costs, with one short entry blocked at limit-down.
 
 See [VALIDATION.md](./VALIDATION.md) for the full evidence, stability split, delisting cases and limitations.
 
@@ -151,7 +154,7 @@ python scripts/validate.py output/backtest-2024.json --evidence output/backtest-
 python scripts/summarize.py output/backtest-2024.json --evidence output/backtest-2024-evidence.parquet
 ```
 
-PandaData remains `experimental`: the current price response does not expose historical point-in-time suspension, ST, limit-up/limit-down or borrow-availability fields.
+PandaData now supplies the official calendar, `trade_status`, historical names and daily limit prices. The path remains `experimental` because borrow availability, recalls, queue execution and intraday slippage are not modeled.
 
 Request caches are isolated by SDK, anonymous account hash, provider environment, method and parameters. Each response is written atomically as Parquet plus a verified manifest, so an interrupted full-market run can resume completed requests.
 
@@ -175,7 +178,7 @@ python scripts/backtest.py --provider file `
   --output output/backtest.json
 ```
 
-Use an independent frozen calendar for sparse panels. Without `--calendar`, the result records `calendar_source=panel_date_union`.
+PandaData mode uses and caches the official SH calendar by default. Sparse offline panels should provide a frozen `--calendar`; other runs explicitly record `calendar_source=panel_date_union`.
 
 ## Auditability
 

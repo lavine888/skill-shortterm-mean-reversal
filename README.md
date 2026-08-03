@@ -7,9 +7,9 @@
 点时信号 · 漂移后换手 · PandaData · 可审计输出
 
 [![CI](https://github.com/lavine888/skill-shortterm-mean-reversal/actions/workflows/validate.yml/badge.svg)](https://github.com/lavine888/skill-shortterm-mean-reversal/actions/workflows/validate.yml)
-[![Version](https://img.shields.io/badge/version-0.5.0-2563EB)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.6.0-2563EB)](./CHANGELOG.md)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-33%20passed-2E7D32)](./tests)
+[![Tests](https://img.shields.io/badge/tests-40%20passed-2E7D32)](./tests)
 [![PandaData](https://img.shields.io/badge/PandaData-0.0.12-0F766E)](./VALIDATION.md)
 [![License](https://img.shields.io/badge/license-GPL--3.0-4B5563)](./LICENSE)
 
@@ -83,10 +83,11 @@ flowchart LR
 <tr><td>完整非重叠期间</td><td><strong>48</strong></td></tr>
 <tr><td>远期收益覆盖率</td><td><strong>99.998%</strong></td></tr>
 <tr><td>Rank IC 覆盖率</td><td><strong>99.976%</strong></td></tr>
-<tr><td>本地测试</td><td><strong>33 passed</strong></td></tr>
+<tr><td>本地测试</td><td><strong>40 passed</strong></td></tr>
+<tr><td>0.6.0 严格全市场执行</td><td><strong>首期 9 个退出阻断，fail-closed</strong></td></tr>
 </table>
 
-### 2024 研究快照
+### 2024 历史研究快照（schema 3）
 
 | 指标 | 结果 |
 |---|---:|
@@ -98,7 +99,9 @@ flowchart LR
 | 最大回撤 | `-6.17%` |
 | 平均 Rank IC | `0.0444` |
 
-这是一年期研究结果，不足以证明持续 alpha。上半年 Rank IC 为 `-0.0096`，下半年为 `0.0984`，因子具有明显状态依赖。
+这是一年期、未建模方向性涨跌停成交的历史研究结果，不是当前严格执行结果。0.6.0 使用官方日历和日频交易状态复核时，第一期即出现 1 个多头跌停无法卖出、8 个空头涨停无法回补，运行按设计终止。上表的 `24.59%` 不得解释为可执行收益。
+
+0.6.0 的真实 30 股严格回测完成 48 期：毛收益 `6.29%`，成本后净收益 `-2.19%`，并捕获 1 次空头因跌停无法进场。
 
 完整证据和限制见 [VALIDATION.md](./VALIDATION.md)。
 
@@ -152,7 +155,7 @@ python scripts/validate.py output/backtest-2024.json --evidence output/backtest-
 python scripts/summarize.py output/backtest-2024.json --evidence output/backtest-2024-evidence.parquet
 ```
 
-PandaData 路径仍标记为 `experimental`：当前价格响应不提供历史点时停牌、ST、涨跌停和融券可得性字段。
+PandaData 已提供官方交易日历、`trade_status`、历史名称和每日涨跌停价。路径仍标记为 `experimental`，因为融券可得性、召回、排队成交和盘中滑点尚未建模。
 
 请求缓存按 SDK、匿名账号哈希、接口环境、方法和参数隔离，并以 Parquet + manifest 原子写入。中断后重复同一命令会校验并复用已完成请求。
 
@@ -176,7 +179,7 @@ python scripts/backtest.py --provider file `
   --output output/backtest.json
 ```
 
-稀疏面板应提供独立冻结日历。未传 `--calendar` 时，结果会记录 `calendar_source=panel_date_union`。
+PandaData 模式默认使用并缓存官方 SH 交易日历；离线稀疏面板应通过 `--calendar` 提供独立冻结日历。其他情况下结果会明确记录 `calendar_source=panel_date_union`。
 
 ## 审计能力
 

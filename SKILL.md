@@ -45,9 +45,9 @@ Use this skill for Q58 research: rank A-shares by their trailing five-market-ses
 1. Load post-adjusted daily closes from PandaData, a verified resumable request cache, or a frozen offline file.
 2. At each decision date, expose only rows dated on or before that date.
 3. Require valid closes on both the decision date and exactly five market sessions earlier.
-4. Exclude decision-date rows marked suspended, ST or non-tradable when those flags are supplied.
+4. Use PandaData's official SH calendar and exclude decision-date rows marked suspended, ST or non-tradable.
 5. Select deterministic bottom/top deciles, with 0.5 long and 0.5 short gross notional.
-6. Leave missing or non-tradable entries in cash; fail closed if an executed position cannot be valued and exited.
+6. Leave missing, suspended, ST or directionally limit-blocked entries in cash; fail closed if an executed position cannot be valued and exited.
 7. Measure returns from the next market close through the close five sessions later.
 8. Deduct one-way costs from drift-adjusted traded notional and report Rank IC, turnover, coverage and drawdown.
 
@@ -89,6 +89,6 @@ Use `scripts/summarize.py` only after `scripts/validate.py` passes. The explicit
 
 ## Safety Boundary
 
-The long-short portfolio is a factor research diagnostic, not a directly executable A-share cash-equity strategy. A-shares cannot generally be shorted; borrow availability, limits, limit-up/limit-down fills, intraday slippage and forced delisting outcomes are not modeled. Do not describe demo or backtest output as live performance or investment advice.
+The long-short portfolio is a factor research diagnostic, not a directly executable A-share cash-equity strategy. A-shares cannot generally be shorted; borrow availability, queue priority, intraday slippage and forced delisting outcomes are not fully modeled. Daily limit-up/limit-down closes block directionally impossible actions but do not prove an executable fill away from the limit. Do not describe demo or backtest output as live performance or investment advice.
 
 Read `references/methodology.md` and `references/data_guide.md` before interpreting results.

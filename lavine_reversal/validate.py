@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 from .contract import compute_run_id
-from .engine import _rank_ic, calculate_stats
+from .engine import _limit_block_reason, _rank_ic, calculate_stats
 from .evidence import EVIDENCE_COLUMNS, EVIDENCE_SCHEMA_VERSION, file_sha256
 from .version import SCHEMA_VERSION, SKILL_NAME, SKILL_VERSION
 
@@ -30,7 +30,7 @@ PERIOD_KEYS = {
 EVIDENCE_KEYS = {
     "past_return", "reversal_score", "target_weight", "executed_weight",
     "entry_price", "exit_price", "forward_return", "entry_status", "exit_status",
-    "actual_exit_date",
+    "entry_block_reason", "exit_block_reason", "actual_exit_date",
 }
 SNAPSHOT_TOP_LEVEL_KEYS = {
     "schema_version", "artifact_type", "skill", "skill_version", "source",
@@ -160,6 +160,23 @@ def _validate_factor_evidence(payload: dict[str, Any], evidence_path: str | Path
     numeric = ["past_return", "reversal_score", "target_weight"]
     if not np.isfinite(frame[numeric].to_numpy(dtype=float)).all():
         raise ValueError("factor evidence contains non-finite required values")
+    boolean_columns = [
+        "entry_suspended", "entry_is_st", "entry_tradable",
+        "exit_suspended", "exit_is_st", "exit_tradable",
+    ]
+    if frame[boolean_columns].isna().any().any():
+        raise ValueError("factor evidence contains missing trading-state flags")
+    allowed_reasons = {None, "missing_price", "suspended", "st", "non_tradable", "limit_up", "limit_down", "not_applicable"}
+    entry_reasons = {None if pd.isna(value) else value for value in frame["entry_block_reason"]}
+    exit_reasons = {None if pd.isna(value) else value for value in frame["exit_block_reason"]}
+    if not entry_reasons.issubset(allowed_reasons):
+        raise ValueError("factor evidence contains an invalid entry block reason")
+    if not exit_reasons.issubset(allowed_reasons):
+        raise ValueError("factor evidence contains an invalid exit block reason")
+    for column in ("entry_limit_up", "entry_limit_down", "exit_limit_up", "exit_limit_down"):
+        present = frame[column].dropna().to_numpy(dtype=float)
+        if len(present) and (not np.isfinite(present).all() or not (present > 0).all()):
+            raise ValueError(f"factor evidence contains invalid {column} values")
 
     for period in payload["periods"]:
         decision = period["decision_date"]
@@ -186,8 +203,47 @@ def _validate_factor_evidence(payload: dict[str, Any], evidence_path: str | Path
             raise ValueError(f"factor evidence non-selected weights are nonzero on {decision}")
         period_evidence = period["selected_evidence"]
         for row in group.loc[group["symbol"].isin(selected)].itertuples(index=False):
-            if not _close(row.target_weight, period_evidence[row.symbol]["target_weight"]):
+            item = period_evidence[row.symbol]
+            if not _close(row.target_weight, item["target_weight"]):
                 raise ValueError(f"factor evidence selected weight is inconsistent for {row.symbol}")
+            if row.entry_price is None or pd.isna(row.entry_price):
+                expected_entry_block = "missing_price"
+            elif row.entry_suspended:
+                expected_entry_block = "suspended"
+            elif row.entry_is_st:
+                expected_entry_block = "st"
+            elif not row.entry_tradable:
+                expected_entry_block = "non_tradable"
+            else:
+                expected_entry_block = _limit_block_reason(
+                    row.target_weight, "entry", row.entry_price,
+                    row.entry_limit_up if pd.notna(row.entry_limit_up) else None,
+                    row.entry_limit_down if pd.notna(row.entry_limit_down) else None,
+                )
+            row_entry_reason = None if pd.isna(row.entry_block_reason) else row.entry_block_reason
+            if row_entry_reason != expected_entry_block or item["entry_block_reason"] != expected_entry_block:
+                raise ValueError(f"factor evidence entry block reason is inconsistent for {row.symbol}")
+            if expected_entry_block is not None:
+                expected_exit_block = "not_applicable"
+            elif row.exit_price is None or pd.isna(row.exit_price):
+                expected_exit_block = "missing_price"
+            elif row.exit_suspended:
+                expected_exit_block = "suspended"
+            elif row.exit_is_st:
+                expected_exit_block = "st"
+            elif not row.exit_tradable:
+                expected_exit_block = "non_tradable"
+            else:
+                expected_exit_block = _limit_block_reason(
+                    row.target_weight, "exit", row.exit_price,
+                    row.exit_limit_up if pd.notna(row.exit_limit_up) else None,
+                    row.exit_limit_down if pd.notna(row.exit_limit_down) else None,
+                )
+            if item["exit_status"] == "forced_delisting_exit":
+                expected_exit_block = None
+            row_exit_reason = None if pd.isna(row.exit_block_reason) else row.exit_block_reason
+            if row_exit_reason != expected_exit_block or item["exit_block_reason"] != expected_exit_block:
+                raise ValueError(f"factor evidence exit block reason is inconsistent for {row.symbol}")
 
         priced = group["entry_price"].notna() & group["exit_price"].notna()
         expected_forward = group.loc[priced, "exit_price"] / group.loc[priced, "entry_price"] - 1.0
@@ -219,6 +275,9 @@ def validate_result(payload: dict[str, Any], evidence_path: str | Path | None = 
         raise ValueError("unsupported result contract")
     if payload["source_status"] not in {"synthetic", "experimental", "user_supplied"}:
         raise ValueError("invalid source_status")
+    capabilities = payload["data_capabilities"]
+    if capabilities.get("calendar_source") not in {"panel_date_union", "explicit", "pandadata"}:
+        raise ValueError("invalid market calendar source")
     _validate_source_context(payload)
     if not _valid_date(payload["start"]) or not _valid_date(payload["end"]) or payload["start"] > payload["end"]:
         raise ValueError("invalid result date range")
@@ -262,12 +321,14 @@ def validate_result(payload: dict[str, Any], evidence_path: str | Path | None = 
             if symbol in longs and target <= 0 or symbol in shorts and target >= 0:
                 raise ValueError(f"{path} has wrong target weight sign for {symbol}")
             if item["entry_status"] == "filled":
-                if not _close(executed, target) or item["entry_price"] is None:
+                if not _close(executed, target) or item["entry_price"] is None or item["entry_block_reason"] is not None:
                     raise ValueError(f"{path} has inconsistent filled entry for {symbol}")
                 if item["exit_status"] not in {"filled", "forced_delisting_exit"} or item["exit_price"] is None or item["forward_return"] is None:
                     raise ValueError(f"{path} has unresolved filled position for {symbol}")
                 if not _valid_date(item["actual_exit_date"]) or not period["entry_date"] <= item["actual_exit_date"] <= period["exit_date"]:
                     raise ValueError(f"{path} has invalid actual exit date for {symbol}")
+                if item["exit_block_reason"] is not None:
+                    raise ValueError(f"{path} has inconsistent filled exit for {symbol}")
                 expected_return = float(item["exit_price"]) / float(item["entry_price"]) - 1.0
                 if not _close(item["forward_return"], expected_return):
                     raise ValueError(f"{path} has inconsistent forward return for {symbol}")
@@ -275,8 +336,10 @@ def validate_result(payload: dict[str, Any], evidence_path: str | Path | None = 
                 priced += 1
                 forced_delisting_exits += item["exit_status"] == "forced_delisting_exit"
             elif item["entry_status"] == "unfilled":
-                if not _close(executed, 0.0) or item["entry_price"] is not None or item["forward_return"] is not None or item["actual_exit_date"] is not None:
+                if not _close(executed, 0.0) or item["entry_price"] is not None or item["forward_return"] is not None or item["actual_exit_date"] is not None or not item["entry_block_reason"]:
                     raise ValueError(f"{path} has inconsistent unfilled entry for {symbol}")
+                if item["exit_block_reason"] != "not_applicable":
+                    raise ValueError(f"{path} has inconsistent unfilled exit for {symbol}")
             else:
                 raise ValueError(f"{path} has invalid entry status for {symbol}")
         if not _close(sum(evidence[s]["target_weight"] for s in longs), 0.5):

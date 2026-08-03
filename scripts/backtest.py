@@ -47,12 +47,14 @@ def main() -> None:
     if evidence_output == output:
         parser.error("--evidence-output must differ from --output")
     calendar = None
+    calendar_source = "panel_date_union"
     if args.calendar:
         calendar_path = Path(args.calendar).resolve()
         if calendar_path == output:
             parser.error("--output must not overwrite --calendar")
         calendar_frame = pd.read_csv(calendar_path)
         calendar = calendar_frame["date"] if "date" in calendar_frame else calendar_frame.iloc[:, 0]
+        calendar_source = "explicit"
     if args.provider == "file":
         if not args.input:
             parser.error("--input is required for provider=file")
@@ -77,17 +79,25 @@ def main() -> None:
     load_start = (pd.Timestamp(args.start) - timedelta(days=45)).strftime("%Y%m%d")
     panel = provider.load(load_start, args.end, None if args.all_a else args.symbols)
     if isinstance(provider, PandaDataProvider):
+        if calendar is None:
+            calendar = provider.load_calendar(load_start, args.end)
+            calendar_source = "pandadata"
+        provider.bind_runtime_context(panel)
         cache = provider.cache_diagnostics()
         print(f"PandaData cache hits={cache['hits']} misses={cache['misses']}")
     if evidence_output is not None:
         with FactorEvidenceWriter(evidence_output) as writer:
             result = run_backtest(
                 panel, args.start, args.end, config, source=args.provider,
-                calendar=calendar, evidence_sink=writer.write,
+                calendar=calendar, calendar_source=calendar_source,
+                evidence_sink=writer.write,
             )
         attach_factor_evidence(result, writer.metadata())
     else:
-        result = run_backtest(panel, args.start, args.end, config, source=args.provider, calendar=calendar)
+        result = run_backtest(
+            panel, args.start, args.end, config, source=args.provider,
+            calendar=calendar, calendar_source=calendar_source,
+        )
     validate_result(result, evidence_path=evidence_output)
     write_json_atomic(output, result)
     metrics = result["metrics"]

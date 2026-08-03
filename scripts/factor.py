@@ -37,12 +37,14 @@ def main() -> None:
         parser.error(f"invalid --as-of date: {exc}")
     output = Path(args.output).resolve()
     calendar = None
+    calendar_source = "panel_date_union"
     if args.calendar:
         calendar_path = Path(args.calendar).resolve()
         if calendar_path == output:
             parser.error("--output must not overwrite --calendar")
         calendar_frame = pd.read_csv(calendar_path)
         calendar = calendar_frame["date"] if "date" in calendar_frame else calendar_frame.iloc[:, 0]
+        calendar_source = "explicit"
     if args.provider == "file":
         if not args.input:
             parser.error("--input is required for provider=file")
@@ -67,6 +69,10 @@ def main() -> None:
     else:
         panel = provider.load(start, args.as_of, None if args.all_a else args.symbols)
     if isinstance(provider, PandaDataProvider):
+        if calendar is None:
+            calendar = provider.load_calendar(start, args.as_of)
+            calendar_source = "pandadata"
+        provider.bind_runtime_context(panel)
         cache = provider.cache_diagnostics()
         print(f"PandaData cache hits={cache['hits']} misses={cache['misses']}")
     config = StrategyConfig()
@@ -87,8 +93,11 @@ def main() -> None:
             "suspended_flag": "suspended" in provided_columns,
             "st_flag": "is_st" in provided_columns,
             "tradable_flag": "tradable" in provided_columns,
+            "trade_status": "trade_status" in provided_columns,
+            "limit_prices": {"limit_up", "limit_down"}.issubset(provided_columns),
+            "historical_name": "name" in provided_columns,
             "delisting_date": "de_listed_date" in provided_columns,
-            "calendar_source": "explicit" if args.calendar else "panel_date_union",
+            "calendar_source": calendar_source,
         },
         "snapshot": snapshot,
     }

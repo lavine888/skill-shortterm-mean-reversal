@@ -127,3 +127,40 @@ def test_validator_rejects_invalid_source_hash_with_recomputed_run_id():
     result["run_id"] = compute_run_id(result)
     with pytest.raises(ValueError, match="hashes must be lowercase SHA-256"):
         validate_result(result)
+
+
+@pytest.mark.parametrize(
+    ("side", "limit_column", "reason"),
+    [("long_symbols", "limit_up", "limit_up"), ("short_symbols", "limit_down", "limit_down")],
+)
+def test_directional_entry_limits_leave_blocked_targets_in_cash(side, limit_column, reason):
+    data = DemoProvider(n_symbols=30).load("2024-01-01", "2024-06-30")
+    config = StrategyConfig(min_universe=20)
+    baseline = run_backtest(data, "2024-02-01", "2024-06-28", config, source="demo")
+    first = baseline["periods"][0]
+    symbol = first[side][0]
+    entry = pd.Timestamp(first["entry_date"])
+    data["limit_up"] = data["close"] * 2.0
+    data["limit_down"] = data["close"] * 0.5
+    mask = (data["date"] == entry) & (data["symbol"] == symbol)
+    data.loc[mask, limit_column] = data.loc[mask, "close"]
+    result = run_backtest(data, "2024-02-01", "2024-06-28", config, source="demo")
+    item = result["periods"][0]["selected_evidence"][symbol]
+    assert item["entry_status"] == "unfilled"
+    assert item["entry_block_reason"] == reason
+    assert item["executed_weight"] == 0.0
+
+
+def test_long_position_at_limit_down_cannot_be_exited():
+    data = DemoProvider(n_symbols=30).load("2024-01-01", "2024-06-30")
+    config = StrategyConfig(min_universe=20)
+    baseline = run_backtest(data, "2024-02-01", "2024-06-28", config, source="demo")
+    first = baseline["periods"][0]
+    symbol = first["long_symbols"][0]
+    exit_date = pd.Timestamp(first["exit_date"])
+    data["limit_up"] = data["close"] * 2.0
+    data["limit_down"] = data["close"] * 0.5
+    mask = (data["date"] == exit_date) & (data["symbol"] == symbol)
+    data.loc[mask, "limit_down"] = data.loc[mask, "close"]
+    with pytest.raises(ValueError, match=f"cannot value or exit.*{symbol}"):
+        run_backtest(data, "2024-02-01", "2024-06-28", config, source="demo")

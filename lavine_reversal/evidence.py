@@ -12,7 +12,7 @@ import pyarrow.parquet as pq
 from .contract import compute_run_id
 
 
-EVIDENCE_SCHEMA_VERSION = 1
+EVIDENCE_SCHEMA_VERSION = 2
 EVIDENCE_SCHEMA = pa.schema([
     pa.field("decision_date", pa.string(), nullable=False),
     pa.field("lookback_date", pa.string(), nullable=False),
@@ -24,7 +24,19 @@ EVIDENCE_SCHEMA = pa.schema([
     pa.field("selected_side", pa.string(), nullable=False),
     pa.field("target_weight", pa.float64(), nullable=False),
     pa.field("entry_price", pa.float64(), nullable=True),
+    pa.field("entry_suspended", pa.bool_(), nullable=False),
+    pa.field("entry_is_st", pa.bool_(), nullable=False),
+    pa.field("entry_tradable", pa.bool_(), nullable=False),
+    pa.field("entry_limit_up", pa.float64(), nullable=True),
+    pa.field("entry_limit_down", pa.float64(), nullable=True),
+    pa.field("entry_block_reason", pa.string(), nullable=True),
     pa.field("exit_price", pa.float64(), nullable=True),
+    pa.field("exit_suspended", pa.bool_(), nullable=False),
+    pa.field("exit_is_st", pa.bool_(), nullable=False),
+    pa.field("exit_tradable", pa.bool_(), nullable=False),
+    pa.field("exit_limit_up", pa.float64(), nullable=True),
+    pa.field("exit_limit_down", pa.float64(), nullable=True),
+    pa.field("exit_block_reason", pa.string(), nullable=True),
     pa.field("forward_return", pa.float64(), nullable=True),
 ])
 EVIDENCE_COLUMNS = EVIDENCE_SCHEMA.names
