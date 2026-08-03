@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import tomllib
 
 from lavine_reversal.version import SKILL_NAME, SKILL_VERSION
 
@@ -13,3 +14,5 @@ def test_distribution_metadata_matches_runtime_version():
     metadata = json.loads((ROOT / "skill.json").read_text(encoding="utf-8"))
     assert metadata["name"] == SKILL_NAME
     assert metadata["version"] == SKILL_VERSION
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    assert project["version"] == SKILL_VERSION
