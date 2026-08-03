@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.metadata
+import json
 import os
 import math
 import time
@@ -65,13 +66,17 @@ class DemoProvider:
 
 
 class PandaDataProvider:
-    def __init__(self, request_interval: float = 1.0, retries: int = 5):
+    def __init__(
+        self, request_interval: float = 1.0, retries: int = 5,
+        cache_dir: str | Path | None = None,
+    ):
         if not math.isfinite(request_interval) or request_interval < 0:
             raise ValueError("request_interval must be finite and non-negative")
         if isinstance(retries, bool) or not isinstance(retries, int) or retries < 1:
             raise ValueError("retries must be a positive integer")
         self.request_interval = request_interval
         self.retries = retries
+        self.cache_dir = Path(cache_dir) if cache_dir else None
         self._last_request = 0.0
         try:
             import panda_data
@@ -87,8 +92,91 @@ class PandaDataProvider:
             kwargs["base_url"] = base_url
         panda_data.init_token(**kwargs)
         self.api = panda_data
+        self.sdk_version = importlib.metadata.version("panda-data")
+        self._cache_context = {
+            "sdk_version": self.sdk_version,
+            "account_hash": hashlib.sha256(username.encode("utf-8")).hexdigest()[:16],
+            "base_url_hash": hashlib.sha256((base_url or "default").encode("utf-8")).hexdigest()[:16],
+        }
+        self._cache_hits = 0
+        self._cache_misses = 0
+        self._response_entries: set[str] = set()
+
+    def _cache_paths(self, name: str, kwargs: dict) -> tuple[Path, Path] | None:
+        if self.cache_dir is None:
+            return None
+        payload = json.dumps(
+            {"method": name, "kwargs": kwargs, "context": self._cache_context},
+            sort_keys=True, ensure_ascii=True, default=str, separators=(",", ":"),
+        )
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        parquet = self.cache_dir / name / f"{digest}.parquet"
+        return parquet, parquet.with_suffix(".json")
+
+    @staticmethod
+    def _frame_digest(frame: pd.DataFrame) -> str:
+        metadata = json.dumps(
+            {"columns": list(frame.columns), "dtypes": [str(dtype) for dtype in frame.dtypes]},
+            sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+        values = pd.util.hash_pandas_object(frame, index=False).values.tobytes()
+        return hashlib.sha256(metadata + values).hexdigest()
+
+    def _read_cache(self, paths: tuple[Path, Path] | None) -> pd.DataFrame | None:
+        if paths is None:
+            return None
+        parquet, manifest_path = paths
+        if not parquet.exists() or not manifest_path.exists():
+            return None
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            frame = pd.read_parquet(parquet)
+            digest = self._frame_digest(frame)
+            if (
+                manifest.get("frame_sha256") != digest
+                or manifest.get("row_count") != len(frame)
+                or manifest.get("columns") != list(frame.columns)
+            ):
+                return None
+            self._cache_hits += 1
+            self._response_entries.add(f"{parquet.stem}:{digest}")
+            return frame
+        except Exception:
+            return None
+
+    def _write_cache(self, paths: tuple[Path, Path] | None, frame: pd.DataFrame) -> bool:
+        if paths is None:
+            return False
+        parquet, manifest_path = paths
+        temporary = parquet.with_suffix(f".{os.getpid()}.tmp.parquet")
+        manifest_temporary = manifest_path.with_suffix(f".{os.getpid()}.tmp.json")
+        try:
+            parquet.parent.mkdir(parents=True, exist_ok=True)
+            digest = self._frame_digest(frame)
+            frame.to_parquet(temporary, index=False)
+            manifest_temporary.write_text(json.dumps({
+                "method": parquet.parent.name,
+                "row_count": len(frame),
+                "columns": list(frame.columns),
+                "frame_sha256": digest,
+                "context": self._cache_context,
+            }, sort_keys=True, indent=2), encoding="utf-8")
+            temporary.replace(parquet)
+            manifest_temporary.replace(manifest_path)
+            self._response_entries.add(f"{parquet.stem}:{digest}")
+            return True
+        except Exception:
+            return False
+        finally:
+            temporary.unlink(missing_ok=True)
+            manifest_temporary.unlink(missing_ok=True)
 
     def _call(self, name: str, **kwargs) -> pd.DataFrame:
+        cache_paths = self._cache_paths(name, kwargs)
+        cached = self._read_cache(cache_paths)
+        if cached is not None:
+            return cached
+        self._cache_misses += 1
         for attempt in range(self.retries):
             delay = self.request_interval - (time.monotonic() - self._last_request)
             if delay > 0:
@@ -99,7 +187,10 @@ class PandaDataProvider:
                 if not callable(api):
                     raise RuntimeError(f"panda_data has no callable {name}")
                 result = api(**kwargs)
-                return result.copy() if isinstance(result, pd.DataFrame) else pd.DataFrame(result)
+                frame = result.copy() if isinstance(result, pd.DataFrame) else pd.DataFrame(result)
+                if not self._write_cache(cache_paths, frame):
+                    self._response_entries.add(f"uncached:{self._frame_digest(frame)}")
+                return frame
             except Exception:
                 if attempt + 1 == self.retries:
                     raise
@@ -164,8 +255,16 @@ class PandaDataProvider:
         result.attrs["provided_columns"] = ["date", "symbol", "close", "de_listed_date"]
         result.attrs["provider_context"] = {
             "provider": "PandaData",
-            "sdk_version": importlib.metadata.version("panda-data"),
+            "sdk_version": self.sdk_version,
             "requested_universe_size": len(universe),
             "universe_sha256": hashlib.sha256("\n".join(sorted(universe)).encode("ascii")).hexdigest(),
+            "cache_enabled": self.cache_dir is not None,
+            "response_count": len(self._response_entries),
+            "response_manifest_sha256": hashlib.sha256(
+                "\n".join(sorted(self._response_entries)).encode("ascii")
+            ).hexdigest(),
         }
         return result
+
+    def cache_diagnostics(self) -> dict[str, int]:
+        return {"hits": self._cache_hits, "misses": self._cache_misses}

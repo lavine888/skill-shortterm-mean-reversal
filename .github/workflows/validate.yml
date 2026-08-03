@@ -19,3 +19,4 @@ jobs:
       - run: python scripts/validate_metadata.py
       - run: python scripts/backtest.py --provider demo --start 20220101 --end 20241231 --output output/demo.json
       - run: python scripts/validate.py output/demo.json
+      - run: python scripts/package_release.py --skip-checks --destination dist

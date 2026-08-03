@@ -7,8 +7,9 @@
 Point-in-time signals · Drift-aware turnover · PandaData · Auditable outputs
 
 [![CI](https://github.com/lavine888/skill-shortterm-mean-reversal/actions/workflows/validate.yml/badge.svg)](https://github.com/lavine888/skill-shortterm-mean-reversal/actions/workflows/validate.yml)
+[![Version](https://img.shields.io/badge/version-0.4.0-2563EB)](./CHANGELOG.md)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-24%20passed-2E7D32)](./tests)
+[![Tests](https://img.shields.io/badge/tests-30%20passed-2E7D32)](./tests)
 [![PandaData](https://img.shields.io/badge/PandaData-0.0.12-0F766E)](./VALIDATION.md)
 [![License](https://img.shields.io/badge/license-GPL--3.0-4B5563)](./LICENSE)
 
@@ -82,7 +83,7 @@ The live-data run used `panda_data 0.0.12` and completed against the full Shangh
 | Complete non-overlapping periods | **48** |
 | Forward-return coverage | **99.998%** |
 | Rank IC coverage | **99.976%** |
-| Local test suite | **24 passed** |
+| Local test suite | **30 passed** |
 
 ### 2024 Research Snapshot
 
@@ -128,6 +129,7 @@ $env:PANDA_DATA_PASSWORD = "your-password"
 
 python scripts/factor.py --provider pandadata --all-a `
   --as-of 20241231 `
+  --cache-dir output/panda-cache `
   --output output/factor-20241231.json
 
 python scripts/validate.py output/factor-20241231.json
@@ -139,6 +141,7 @@ python scripts/validate.py output/factor-20241231.json
 python scripts/backtest.py --provider pandadata --all-a `
   --start 20240102 --end 20241231 `
   --cost-rate 0.001 `
+  --cache-dir output/panda-cache `
   --delisting-exit-policy last_available_close `
   --output output/backtest-2024.json
 
@@ -147,6 +150,8 @@ python scripts/summarize.py output/backtest-2024.json
 ```
 
 PandaData remains `experimental`: the current price response does not expose historical point-in-time suspension, ST, limit-up/limit-down or borrow-availability fields.
+
+Request caches are isolated by SDK, anonymous account hash, provider environment, method and parameters. Each response is written atomically as Parquet plus a verified manifest, so an interrupted full-market run can resume completed requests.
 
 ## Offline Panel Contract
 
@@ -194,6 +199,14 @@ SKILL.md             Agent Skill entrypoint and qsh-form
 VALIDATION.md        Real PandaData execution report
 ```
 
+## Release Archive
+
+```powershell
+python scripts/package_release.py --destination dist
+```
+
+The deterministic ZIP contains both READMEs and a `MANIFEST.sha256`. The packager rejects generated output, caches, credentials and Python build artifacts.
+
 ## Boundaries
 
 - A-share cash equities generally cannot provide the individual-stock short leg used by this diagnostic.
@@ -203,6 +216,8 @@ VALIDATION.md        Real PandaData execution report
 - One year of full-market results is not enough for a multi-cycle conclusion; multi-year and out-of-sample validation remain required.
 
 Read [methodology.md](./references/methodology.md) for the math, [data_guide.md](./references/data_guide.md) for input requirements, and [source_boundary.md](./references/source_boundary.md) before interpreting any result.
+
+See [ROADMAP.md](./ROADMAP.md) for independent cross-sectional evidence, official trading states and multi-year validation work.
 
 ## License
 

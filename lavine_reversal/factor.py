@@ -91,6 +91,8 @@ def _build_snapshot_normalized(
     decision_date: str | pd.Timestamp,
     config: StrategyConfig,
     dates: pd.DatetimeIndex | None = None,
+    date_frames: dict[pd.Timestamp, pd.DataFrame] | None = None,
+    visible_symbols: set[str] | None = None,
 ) -> dict[str, Any]:
     cfg = config
     decision = pd.Timestamp(decision_date).normalize()
@@ -103,9 +105,18 @@ def _build_snapshot_normalized(
         raise ValueError("insufficient market-session lookback")
     lookback_date = dates[position - cfg.lookback]
 
-    current = work.loc[work["date"] == decision].set_index("symbol")
-    previous = work.loc[work["date"] == lookback_date].set_index("symbol")
-    all_symbols = sorted(work["symbol"].unique().tolist())
+    if date_frames is None:
+        current = work.loc[work["date"] == decision].set_index("symbol")
+        previous = work.loc[work["date"] == lookback_date].set_index("symbol")
+    else:
+        empty = work.iloc[0:0].set_index("symbol")
+        current = date_frames.get(decision, empty).copy()
+        previous = date_frames.get(lookback_date, empty).copy()
+    all_symbols = sorted(
+        visible_symbols
+        if visible_symbols is not None
+        else work.loc[work["date"] <= decision, "symbol"].unique().tolist()
+    )
     common = current.index.intersection(previous.index)
     past = current.loc[common, "close"] / previous.loc[common, "close"] - 1.0
     eligible = (

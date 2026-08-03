@@ -33,7 +33,13 @@ def test_snapshot_ignores_future_rows():
     baseline = build_snapshot(data.loc[data["date"] <= decision], decision)
     changed = data.copy()
     changed.loc[changed["date"] > decision, "close"] *= 100
-    assert build_snapshot(changed, decision)["weights"] == baseline["weights"]
+    future_only = pd.DataFrame({
+        "date": [data["date"].max()], "symbol": ["999999.SZ"], "close": [10.0],
+    })
+    changed = pd.concat([changed, future_only], ignore_index=True)
+    result = build_snapshot(changed, decision)
+    assert result["weights"] == baseline["weights"]
+    assert result["diagnostics"] == baseline["diagnostics"]
 
 
 def test_snapshot_excludes_decision_day_st_rows():

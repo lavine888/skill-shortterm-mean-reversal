@@ -52,8 +52,14 @@ def _status_panel(work: pd.DataFrame, dates: pd.DatetimeIndex) -> pd.DataFrame:
 
 def build_source_context(work: pd.DataFrame, dates: pd.DatetimeIndex) -> dict[str, Any]:
     digest_columns = ["date", "symbol", "close", "suspended", "is_st", "tradable"]
+    if "de_listed_date" in work:
+        digest_columns.append("de_listed_date")
     digest_frame = work[digest_columns].copy()
     digest_frame["date"] = digest_frame["date"].dt.strftime("%Y%m%d")
+    if "de_listed_date" in digest_frame:
+        digest_frame["de_listed_date"] = pd.to_datetime(
+            digest_frame["de_listed_date"], format="mixed", errors="coerce"
+        ).dt.strftime("%Y%m%d").fillna("")
     metadata = json.dumps(digest_columns, separators=(",", ":")).encode("utf-8")
     values = pd.util.hash_pandas_object(digest_frame, index=False).values.tobytes()
     calendar_values = "\n".join(date.strftime("%Y%m%d") for date in dates).encode("ascii")
@@ -87,6 +93,10 @@ def run_backtest(
     dates = market_dates(work, calendar)
     close = work.pivot(index="date", columns="symbol", values="close").reindex(dates)
     executable = _status_panel(work, dates)
+    date_frames = {
+        pd.Timestamp(date): frame.set_index("symbol")
+        for date, frame in work.groupby("date", sort=False)
+    }
     first = max(cfg.lookback, int(np.searchsorted(dates.values, start_date.to_datetime64(), side="left")))
     last = int(np.searchsorted(dates.values, end_date.to_datetime64(), side="right")) - 1
     if first > last:
@@ -95,13 +105,21 @@ def run_backtest(
     periods: list[dict[str, Any]] = []
     previous_drifted_weights: dict[str, float] = {}
     last_ending_positions: dict[str, float] = {}
+    visible_symbols: set[str] = set()
+    visible_cursor = 0
     for position in range(first, last + 1, cfg.rebalance_every):
         entry_position = position + cfg.execution_lag
         exit_position = entry_position + cfg.hold_days
         if exit_position >= len(dates) or dates[exit_position] > end_date:
             break
         decision, entry, exit_date = dates[position], dates[entry_position], dates[exit_position]
-        snapshot = _build_snapshot_normalized(work, decision, cfg, dates)
+        while visible_cursor <= position:
+            visible_symbols.update(date_frames.get(dates[visible_cursor], pd.DataFrame()).index.astype(str))
+            visible_cursor += 1
+        snapshot = _build_snapshot_normalized(
+            work, decision, cfg, dates, date_frames=date_frames,
+            visible_symbols=visible_symbols,
+        )
         entry_prices, exit_prices = close.loc[entry], close.loc[exit_date]
         entry_status, exit_status = executable.loc[entry], executable.loc[exit_date]
         all_forward = exit_prices / entry_prices - 1.0

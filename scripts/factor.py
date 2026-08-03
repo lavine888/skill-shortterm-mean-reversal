@@ -28,6 +28,7 @@ def main() -> None:
     universe.add_argument("--symbols", nargs="+")
     universe.add_argument("--all-a", action="store_true")
     parser.add_argument("--calendar", help="CSV/text market calendar with a date column")
+    parser.add_argument("--cache-dir", default="output/panda-cache", help="PandaData request cache")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     try:
@@ -55,7 +56,7 @@ def main() -> None:
             parser.error("--input is not valid for provider=pandadata")
         if not args.all_a and not args.symbols:
             parser.error("pass --all-a or --symbols for provider=pandadata")
-        provider = PandaDataProvider()
+        provider = PandaDataProvider(cache_dir=args.cache_dir)
     else:
         if args.input or args.all_a:
             parser.error("--input and --all-a are not valid for provider=demo")
@@ -65,6 +66,9 @@ def main() -> None:
         panel = provider.load(start, args.as_of, None, universe_as_of=args.as_of)
     else:
         panel = provider.load(start, args.as_of, None if args.all_a else args.symbols)
+    if isinstance(provider, PandaDataProvider):
+        cache = provider.cache_diagnostics()
+        print(f"PandaData cache hits={cache['hits']} misses={cache['misses']}")
     config = StrategyConfig()
     provided_columns = set(panel.attrs.get("provided_columns", panel.columns))
     dates = market_dates(panel, calendar)

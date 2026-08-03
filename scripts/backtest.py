@@ -30,6 +30,7 @@ def main() -> None:
     parser.add_argument("--calendar", help="CSV/text market calendar with a date column")
     parser.add_argument("--output", required=True)
     parser.add_argument("--request-interval", type=float, default=1.0)
+    parser.add_argument("--cache-dir", default="output/panda-cache", help="PandaData request cache")
     args = parser.parse_args()
     try:
         start, end = pd.Timestamp(args.start), pd.Timestamp(args.end)
@@ -60,7 +61,7 @@ def main() -> None:
             parser.error("--input is not valid for provider=pandadata")
         if not args.all_a and not args.symbols:
             parser.error("pass --all-a or --symbols for provider=pandadata")
-        provider = PandaDataProvider(request_interval=args.request_interval)
+        provider = PandaDataProvider(request_interval=args.request_interval, cache_dir=args.cache_dir)
     else:
         if args.input or args.all_a:
             parser.error("--input and --all-a are not valid for provider=demo")
@@ -68,6 +69,9 @@ def main() -> None:
     config = StrategyConfig(cost_rate=args.cost_rate, delisting_exit_policy=args.delisting_exit_policy)
     load_start = (pd.Timestamp(args.start) - timedelta(days=45)).strftime("%Y%m%d")
     panel = provider.load(load_start, args.end, None if args.all_a else args.symbols)
+    if isinstance(provider, PandaDataProvider):
+        cache = provider.cache_diagnostics()
+        print(f"PandaData cache hits={cache['hits']} misses={cache['misses']}")
     result = run_backtest(panel, args.start, args.end, config, source=args.provider, calendar=calendar)
     validate_result(result)
     write_json_atomic(output, result)

@@ -74,6 +74,41 @@ def _valid_date(value: Any) -> bool:
     return isinstance(value, str) and re.fullmatch(r"\d{8}", value) is not None
 
 
+def _valid_sha256(value: Any) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def _validate_source_context(payload: dict[str, Any]) -> None:
+    context = payload["source_context"]
+    required = {
+        "row_count", "symbol_count", "first_date", "last_date", "panel_sha256",
+        "calendar_sha256", "calendar_sessions", "provider_context",
+    }
+    _require_keys(context, required, "source_context")
+    if any(not isinstance(context[key], int) or context[key] <= 0 for key in ("row_count", "symbol_count", "calendar_sessions")):
+        raise ValueError("source_context counts must be positive integers")
+    if not _valid_date(context["first_date"]) or not _valid_date(context["last_date"]) or context["first_date"] > context["last_date"]:
+        raise ValueError("source_context dates are invalid")
+    if not _valid_sha256(context["panel_sha256"]) or not _valid_sha256(context["calendar_sha256"]):
+        raise ValueError("source_context hashes must be lowercase SHA-256")
+    provider = context["provider_context"]
+    if not isinstance(provider, dict) or not provider.get("provider"):
+        raise ValueError("source_context provider_context is invalid")
+    expected_status = "synthetic" if payload["source"] == "demo" else ("experimental" if payload["source"] == "pandadata" else "user_supplied")
+    if payload["source_status"] != expected_status:
+        raise ValueError("source_status is inconsistent with source")
+    if payload["source"] == "pandadata":
+        panda_required = {
+            "sdk_version", "requested_universe_size", "universe_sha256",
+            "cache_enabled", "response_count", "response_manifest_sha256",
+        }
+        _require_keys(provider, panda_required, "source_context.provider_context")
+        if not _valid_sha256(provider["universe_sha256"]) or not _valid_sha256(provider["response_manifest_sha256"]):
+            raise ValueError("PandaData provenance hashes are invalid")
+        if not isinstance(provider["cache_enabled"], bool) or not isinstance(provider["response_count"], int) or provider["response_count"] <= 0:
+            raise ValueError("PandaData response diagnostics are invalid")
+
+
 def validate_result(payload: dict[str, Any]) -> None:
     if not isinstance(payload, dict):
         raise ValueError("result must be an object")
@@ -87,6 +122,7 @@ def validate_result(payload: dict[str, Any]) -> None:
         raise ValueError("unsupported result contract")
     if payload["source_status"] not in {"synthetic", "experimental", "user_supplied"}:
         raise ValueError("invalid source_status")
+    _validate_source_context(payload)
     if not _valid_date(payload["start"]) or not _valid_date(payload["end"]) or payload["start"] > payload["end"]:
         raise ValueError("invalid result date range")
     if not isinstance(payload["periods"], list) or not payload["periods"]:
@@ -205,6 +241,7 @@ def validate_snapshot_result(payload: dict[str, Any]) -> None:
         raise ValueError("unsupported snapshot contract")
     if compute_run_id(payload) != payload["run_id"]:
         raise ValueError("run_id does not match canonical snapshot content")
+    _validate_source_context(payload)
     snapshot = payload["snapshot"]
     _require_keys(snapshot, SNAPSHOT_KEYS, "snapshot")
     if not _valid_date(snapshot["lookback_date"]) or not _valid_date(snapshot["decision_date"]) or snapshot["lookback_date"] >= snapshot["decision_date"]:

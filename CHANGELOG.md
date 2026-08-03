@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0 - 2026-08-03
+
+- 增加按 SDK、匿名账号、接口环境和参数隔离的 PandaData 原子请求缓存。
+- CLI 输出缓存命中/未命中；结果保存稳定的响应数量与 manifest SHA-256，支持断点恢复且不改变 run ID。
+- 修复未来上市证券污染快照诊断股票池的问题。
+- 将退市日期纳入输入面板 SHA-256。
+- 增加 qsh-form、frontmatter、仓库 URL、许可证和双语 README 合规校验。
+- 增加跨平台确定性 ZIP 打包器与归档 SHA-256 manifest，并在 CI 中实际构建。
+- 中文 README 完整本地化，英文 README 保持同口径。
+- schema 升级为 4，测试增至 30 项。
+
 ## 0.3.0 - 2026-08-03
 
 - 增加显式退市退出策略，默认仍为 fail-closed。

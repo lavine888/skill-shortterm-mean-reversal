@@ -2,19 +2,20 @@
 
 # Q58 · Short-Term Mean Reversal
 
-**Five-session cross-sectional reversal research for A-shares**
+**A 股五交易日横截面反转研究**
 
-Point-in-time signals · Drift-aware turnover · PandaData · Auditable outputs
+点时信号 · 漂移后换手 · PandaData · 可审计输出
 
 [![CI](https://github.com/lavine888/skill-shortterm-mean-reversal/actions/workflows/validate.yml/badge.svg)](https://github.com/lavine888/skill-shortterm-mean-reversal/actions/workflows/validate.yml)
+[![Version](https://img.shields.io/badge/version-0.4.0-2563EB)](./CHANGELOG.md)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-24%20passed-2E7D32)](./tests)
+[![Tests](https://img.shields.io/badge/tests-30%20passed-2E7D32)](./tests)
 [![PandaData](https://img.shields.io/badge/PandaData-0.0.12-0F766E)](./VALIDATION.md)
 [![License](https://img.shields.io/badge/license-GPL--3.0-4B5563)](./LICENSE)
 
-<a href="https://github.com/lavine888/skill-shortterm-mean-reversal">Repository</a> ·
-<a href="./SKILL.md">Skill entrypoint</a> ·
-<a href="./VALIDATION.md">Validation report</a>
+<a href="https://github.com/lavine888/skill-shortterm-mean-reversal">代码仓库</a> ·
+<a href="./SKILL.md">Skill 入口</a> ·
+<a href="./VALIDATION.md">验证报告</a>
 
 **简体中文** · [English](./README.en.md)
 
@@ -22,88 +23,88 @@ Point-in-time signals · Drift-aware turnover · PandaData · Auditable outputs
 
 > 量枢院 #58 的独立 canonical Skill。它研究“短期输家反弹、短期赢家回落”的横截面因子，不是实盘交易系统，也不构成投资建议。
 
-## At A Glance
+## 一览
 
 <table>
 <tr>
-<td><strong>Signal</strong><br>5-market-session return</td>
-<td><strong>Portfolio</strong><br>Bottom 10% long / top 10% short</td>
-<td><strong>Execution</strong><br>Next-session close</td>
-<td><strong>Holding</strong><br>5 sessions, non-overlapping</td>
+<td><strong>信号</strong><br>过去 5 个市场交易日收益</td>
+<td><strong>组合</strong><br>底部 10% 多头 / 顶部 10% 空头</td>
+<td><strong>成交</strong><br>下一交易日收盘</td>
+<td><strong>持有</strong><br>5 个交易日，不重叠</td>
 </tr>
 <tr>
-<td><strong>Evidence</strong><br>Point-in-time inputs</td>
-<td><strong>Accounting</strong><br>Drift-aware turnover</td>
-<td><strong>Data</strong><br>PandaData or frozen panel</td>
-<td><strong>Status</strong><br>Runnable / experimental</td>
+<td><strong>证据</strong><br>决策时点可见输入</td>
+<td><strong>会计</strong><br>按漂移权重计算换手</td>
+<td><strong>数据</strong><br>PandaData 或冻结面板</td>
+<td><strong>状态</strong><br>可运行 / 实验性</td>
 </tr>
 </table>
 
-## The Research Contract
+## 研究契约
 
-| Stage | Fixed rule |
+| 阶段 | 固定规则 |
 |---|---|
-| Signal | `decision_close / close_5_market_sessions_ago - 1` |
-| Ranking | Lowest trailing returns receive the highest reversal score |
-| Long leg | Bottom 10%, gross notional `+0.5` |
-| Short leg | Top 10%, gross notional `-0.5` |
-| Execution | Decision close is observed; entry is the next market close |
-| Holding | Entry close through the close five market sessions later |
-| Rebalance | Every five market sessions; `rebalance_every == hold_days` |
-| Cost | `cost_rate × actual traded notional` after weight drift |
-| Missing entry | No fill; capital stays in cash |
-| Missing exit | Fail-closed by default |
-| Delisting | Optional, explicit `last_available_close` policy only |
+| 信号 | `decision_close / close_5_market_sessions_ago - 1` |
+| 排名 | 过去收益越低，反转分数越高 |
+| 多头 | 底部 10%，总名义权重 `+0.5` |
+| 空头 | 顶部 10%，总名义权重 `-0.5` |
+| 成交 | 观察决策日收盘，下一市场交易日收盘进场 |
+| 持有 | 从进场收盘持有至第五个市场交易日收盘 |
+| 调仓 | 每五个市场交易日；`rebalance_every == hold_days` |
+| 成本 | 权重漂移后，`cost_rate × 实际交易名义金额` |
+| 缺失进场 | 不成交，资金保留为现金 |
+| 缺失退出 | 默认 fail-closed |
+| 退市 | 仅允许显式 `last_available_close` 策略 |
 
-### Signal Lifecycle
+### 信号流程
 
 ```mermaid
 flowchart LR
-    A[Point-in-time panel] --> B[5-session return]
-    B --> C[Cross-sectional rank]
-    C --> D[Bottom 10% long]
-    C --> E[Top 10% short]
-    D --> F[Next-close execution]
+    A[点时数据面板] --> B[五交易日收益]
+    B --> C[横截面排名]
+    C --> D[底部 10% 多头]
+    C --> E[顶部 10% 空头]
+    D --> F[下一交易日收盘成交]
     E --> F
-    F --> G[5-session holding period]
-    G --> H[Drift-aware turnover and costs]
-    H --> I[Validated JSON evidence]
+    F --> G[持有五个交易日]
+    G --> H[漂移后换手与成本]
+    H --> I[通过校验的 JSON 证据]
 ```
 
-## Real Validation
+## 真实验证
 
-The live-data run used `panda_data 0.0.12` and completed against the full SH/SZ universe. The raw provider outputs are deliberately excluded from Git; the report preserves their hashes, counts and conclusions.
+真实数据运行使用 `panda_data 0.0.12` 并覆盖完整沪深股票池。原始供应商输出不会进入 Git；验证报告保留其哈希、数量和结论。
 
 <table>
-<tr><th>Check</th><th>Observed result</th></tr>
-<tr><td>Decision-date universe</td><td><strong>5,122</strong> securities</td></tr>
-<tr><td>Valid five-session signals</td><td><strong>5,121</strong> securities</td></tr>
-<tr><td>2024 backtest panel</td><td><strong>1,389,119</strong> rows / 5,174 securities</td></tr>
-<tr><td>Complete non-overlapping periods</td><td><strong>48</strong></td></tr>
-<tr><td>Forward-return coverage</td><td><strong>99.998%</strong></td></tr>
-<tr><td>Rank IC coverage</td><td><strong>99.976%</strong></td></tr>
-<tr><td>Local test suite</td><td><strong>24 passed</strong></td></tr>
+<tr><th>检查项</th><th>实测结果</th></tr>
+<tr><td>决策日股票池</td><td><strong>5,122</strong> 只</td></tr>
+<tr><td>有效五日信号</td><td><strong>5,121</strong> 只</td></tr>
+<tr><td>2024 回测面板</td><td><strong>1,389,119</strong> 行 / 5,174 只证券</td></tr>
+<tr><td>完整非重叠期间</td><td><strong>48</strong></td></tr>
+<tr><td>远期收益覆盖率</td><td><strong>99.998%</strong></td></tr>
+<tr><td>Rank IC 覆盖率</td><td><strong>99.976%</strong></td></tr>
+<tr><td>本地测试</td><td><strong>30 passed</strong></td></tr>
 </table>
 
-### 2024 Research Snapshot
+### 2024 研究快照
 
-| Metric | Result |
+| 指标 | 结果 |
 |---|---:|
-| Gross return | `35.32%` |
-| Net return, 0.1% one-way cost | `24.59%` |
-| Annualized return | `25.96%` |
-| Annualized volatility | `18.21%` |
+| 毛收益 | `35.32%` |
+| 净收益，单边成本 0.1% | `24.59%` |
+| 年化收益 | `25.96%` |
+| 年化波动 | `18.21%` |
 | Sharpe | `1.35` |
-| Maximum drawdown | `-6.17%` |
-| Mean Rank IC | `0.0444` |
+| 最大回撤 | `-6.17%` |
+| 平均 Rank IC | `0.0444` |
 
-This is a one-year research result, not evidence of durable alpha. The first half had Rank IC `-0.0096`; the second half had `0.0984`. The factor is visibly regime-sensitive.
+这是一年期研究结果，不足以证明持续 alpha。上半年 Rank IC 为 `-0.0096`，下半年为 `0.0984`，因子具有明显状态依赖。
 
-See the full evidence and limitations in [VALIDATION.md](./VALIDATION.md).
+完整证据和限制见 [VALIDATION.md](./VALIDATION.md)。
 
-## Quick Start
+## 快速开始
 
-### 1. Install and run the deterministic demo
+### 1. 安装并运行确定性 Demo
 
 ```powershell
 pip install -r requirements-dev.txt
@@ -117,11 +118,11 @@ python scripts/validate.py output/demo.json
 python scripts/summarize.py output/demo.json
 ```
 
-The demo is synthetic and deterministic. It validates the software contract, not the strategy.
+Demo 使用确定性合成数据，只验证软件契约，不验证策略收益。
 
-### 2. Run a real PandaData snapshot
+### 2. 运行真实 PandaData 截面
 
-Credentials are read from environment variables only. They are never written to source, output or cache:
+凭据只从环境变量读取，不会写入源码、结果或缓存：
 
 ```powershell
 $env:PANDA_DATA_USERNAME = "your-account"
@@ -129,17 +130,19 @@ $env:PANDA_DATA_PASSWORD = "your-password"
 
 python scripts/factor.py --provider pandadata --all-a `
   --as-of 20241231 `
+  --cache-dir output/panda-cache `
   --output output/factor-20241231.json
 
 python scripts/validate.py output/factor-20241231.json
 ```
 
-### 3. Run a real backtest
+### 3. 运行真实回测
 
 ```powershell
 python scripts/backtest.py --provider pandadata --all-a `
   --start 20240102 --end 20241231 `
   --cost-rate 0.001 `
+  --cache-dir output/panda-cache `
   --delisting-exit-policy last_available_close `
   --output output/backtest-2024.json
 
@@ -147,19 +150,21 @@ python scripts/validate.py output/backtest-2024.json
 python scripts/summarize.py output/backtest-2024.json
 ```
 
-PandaData remains `experimental`: the current price response does not expose historical point-in-time suspension, ST, limit-up/limit-down or borrow-availability fields.
+PandaData 路径仍标记为 `experimental`：当前价格响应不提供历史点时停牌、ST、涨跌停和融券可得性字段。
 
-## Offline Panel Contract
+请求缓存按 SDK、匿名账号哈希、接口环境、方法和参数隔离，并以 Parquet + manifest 原子写入。中断后重复同一命令会校验并复用已完成请求。
 
-CSV or Parquet input must contain:
+## 离线面板契约
 
-| Column | Meaning |
+CSV 或 Parquet 必须包含：
+
+| 列 | 含义 |
 |---|---|
-| `date` | A-share trading date |
-| `symbol` | Security code, for example `600519.SH` |
-| `close` | Post-adjusted close |
+| `date` | A 股交易日期 |
+| `symbol` | 证券代码，例如 `600519.SH` |
+| `close` | 后复权收盘价 |
 
-Optional point-in-time flags are `suspended`, `is_st` and `tradable`. The normalizer accepts only explicit boolean values such as `true/false`, `1/0` or `yes/no`; invalid prices, blank symbols, weekend dates and conflicting duplicate rows fail closed.
+可选点时标记为 `suspended`、`is_st` 和 `tradable`。只接受 `true/false`、`1/0`、`yes/no` 等明确布尔值；非法价格、空代码、周末日期和冲突重复行会直接拒绝。
 
 ```powershell
 python scripts/backtest.py --provider file `
@@ -169,38 +174,48 @@ python scripts/backtest.py --provider file `
   --output output/backtest.json
 ```
 
-Use an independent frozen calendar for sparse panels. Without `--calendar`, the result records `calendar_source=panel_date_union`.
+稀疏面板应提供独立冻结日历。未传 `--calendar` 时，结果会记录 `calendar_source=panel_date_union`。
 
-## Auditability
+## 审计能力
 
-Every validated result contains:
+每份验证结果包含：
 
-- Input-panel and market-calendar SHA-256 hashes;
-- Source, SDK, universe, date range and rule configuration;
-- Decision, entry, planned exit and actual exit dates;
-- Per-symbol past return, target/executed weight and entry/exit price;
-- Fill status, forced-delisting status, coverage, Rank IC, turnover and costs;
-- Recomputable aggregate metrics and a deterministic `run_id`.
+- 输入面板和市场日历 SHA-256；
+- 数据来源、SDK、股票池、日期范围和规则配置；
+- 决策、进场、计划退出和实际退出日期；
+- 每只证券的过去收益、目标/成交权重和进出价格；
+- 成交状态、强制退市退出、覆盖率、Rank IC、换手和成本；
+- 可重算汇总指标和确定性 `run_id`。
 
-The validator rejects non-finite numbers, invalid chronology, inconsistent returns or costs, missing evidence and tampered run IDs. JSON writes use atomic replacement.
+校验器会拒绝非有限数字、日期错序、收益或成本不一致、证据缺失和被篡改的 run ID。JSON 使用原子替换写盘。
 
-## Repository Map
+## 项目结构
 
 ```text
-lavine_reversal/     factor logic, normalization, accounting, providers, validation
-scripts/             factor, backtest, validate, summarize, packaging
-tests/               point-in-time, execution, delisting, data and contract tests
-references/          methodology, data contract and source boundaries
-SKILL.md             Agent Skill entrypoint and qsh-form
-VALIDATION.md        Real PandaData execution report
+lavine_reversal/     因子逻辑、数据规范化、回测会计、Provider、校验器
+scripts/             因子、回测、校验、汇总、发布打包入口
+tests/               点时、成交、退市、数据、缓存与契约测试
+references/          方法、数据契约和来源边界
+SKILL.md             Agent Skill 入口与 qsh-form
+VALIDATION.md        PandaData 真实执行报告
 ```
 
-## Boundaries
+## 发布包
 
-- A-share cash equities generally cannot provide the individual-stock short leg used by this diagnostic.
-- Borrow fees, availability, recalls, limit-order queues and intraday slippage are not modeled.
-- `last_available_close` assumes the last pre-delisting close was executable; this is an explicit research approximation.
-- The engine supports non-overlapping portfolios only.
-- One year of full-market results is not enough for a multi-cycle conclusion; multi-year and out-of-sample validation remain required.
+```powershell
+python scripts/package_release.py --destination dist
+```
 
-Read [methodology.md](./references/methodology.md) for the math, [data_guide.md](./references/data_guide.md) for input requirements, and [source_boundary.md](./references/source_boundary.md) before interpreting any result.
+发布 ZIP 采用固定文件顺序和时间戳，包含中英 README 与 `MANIFEST.sha256`，并自动拒绝 `output/`、缓存、凭据和 Python 生成文件。
+
+## 研究边界
+
+- A 股现金股票通常无法直接实现本诊断中的个股空头腿。
+- 尚未建模融券费、可借券数量、召回、涨跌停排队和盘中滑点。
+- `last_available_close` 假设退市前最后收盘可成交，是显式研究近似。
+- 引擎只支持非重叠组合。
+- 一年全市场结果不足以得出跨周期结论，仍需多年度和样本外验证。
+
+解读结果前，请阅读 [methodology.md](./references/methodology.md)、[data_guide.md](./references/data_guide.md) 和 [source_boundary.md](./references/source_boundary.md)。
+
+下一阶段的独立横截面证据、官方交易状态和多年度样本计划见 [ROADMAP.md](./ROADMAP.md)。

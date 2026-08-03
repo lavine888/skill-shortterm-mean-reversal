@@ -1,8 +1,7 @@
 __pycache__/
 .pytest_cache/
 *.py[cod]
-output/*.json
-output/*.parquet
+output/
 .env
 *.egg-info/
 build/

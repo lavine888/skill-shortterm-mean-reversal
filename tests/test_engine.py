@@ -107,3 +107,23 @@ def test_validator_rejects_tampering_even_with_recomputed_run_id():
     result["run_id"] = compute_run_id(result)
     with pytest.raises(ValueError, match="metrics.total_return is inconsistent"):
         validate_result(result)
+
+
+def test_panel_hash_covers_delisting_dates():
+    data = DemoProvider(n_symbols=30).load("2024-01-01", "2024-06-30")
+    data["de_listed_date"] = pd.NaT
+    config = StrategyConfig(min_universe=20)
+    baseline = run_backtest(data, "2024-02-01", "2024-06-28", config, source="demo")
+    changed = data.copy()
+    changed.loc[changed["symbol"] == "000030.SZ", "de_listed_date"] = pd.Timestamp("2025-01-01")
+    updated = run_backtest(changed, "2024-02-01", "2024-06-28", config, source="demo")
+    assert baseline["source_context"]["panel_sha256"] != updated["source_context"]["panel_sha256"]
+
+
+def test_validator_rejects_invalid_source_hash_with_recomputed_run_id():
+    data = DemoProvider(n_symbols=30).load("2024-01-01", "2024-06-30")
+    result = run_backtest(data, "2024-02-01", "2024-06-28", StrategyConfig(min_universe=20), source="demo")
+    result["source_context"]["panel_sha256"] = "not-a-hash"
+    result["run_id"] = compute_run_id(result)
+    with pytest.raises(ValueError, match="hashes must be lowercase SHA-256"):
+        validate_result(result)
