@@ -16,11 +16,11 @@ Point-in-time signals · Drift-aware turnover · PandaData · Auditable outputs
 <a href="./SKILL.md">Skill entrypoint</a> ·
 <a href="./VALIDATION.md">Validation report</a>
 
-**简体中文** · [English](./README.en.md)
+[简体中文](./README.md) · **English**
 
 </div>
 
-> 量枢院 #58 的独立 canonical Skill。它研究“短期输家反弹、短期赢家回落”的横截面因子，不是实盘交易系统，也不构成投资建议。
+> The independent canonical Skill for Liangshuyuan Q58. It researches short-term loser rebounds and winner reversals as a cross-sectional factor. It is not a live trading system or investment advice.
 
 ## At A Glance
 
@@ -39,19 +39,19 @@ Point-in-time signals · Drift-aware turnover · PandaData · Auditable outputs
 </tr>
 </table>
 
-## The Research Contract
+## Research Contract
 
 | Stage | Fixed rule |
 |---|---|
 | Signal | `decision_close / close_5_market_sessions_ago - 1` |
-| Ranking | Lowest trailing returns receive the highest reversal score |
+| Ranking | The lowest trailing returns receive the highest reversal score |
 | Long leg | Bottom 10%, gross notional `+0.5` |
 | Short leg | Top 10%, gross notional `-0.5` |
-| Execution | Decision close is observed; entry is the next market close |
+| Execution | Observe the decision close; enter at the next market close |
 | Holding | Entry close through the close five market sessions later |
 | Rebalance | Every five market sessions; `rebalance_every == hold_days` |
 | Cost | `cost_rate × actual traded notional` after weight drift |
-| Missing entry | No fill; capital stays in cash |
+| Missing entry | No fill; capital remains in cash |
 | Missing exit | Fail-closed by default |
 | Delisting | Optional, explicit `last_available_close` policy only |
 
@@ -72,18 +72,17 @@ flowchart LR
 
 ## Real Validation
 
-The live-data run used `panda_data 0.0.12` and completed against the full SH/SZ universe. The raw provider outputs are deliberately excluded from Git; the report preserves their hashes, counts and conclusions.
+The live-data run used `panda_data 0.0.12` and completed against the full Shanghai/Shenzhen universe. Raw provider outputs are deliberately excluded from Git; the report preserves their hashes, counts and conclusions.
 
-<table>
-<tr><th>Check</th><th>Observed result</th></tr>
-<tr><td>Decision-date universe</td><td><strong>5,122</strong> securities</td></tr>
-<tr><td>Valid five-session signals</td><td><strong>5,121</strong> securities</td></tr>
-<tr><td>2024 backtest panel</td><td><strong>1,389,119</strong> rows / 5,174 securities</td></tr>
-<tr><td>Complete non-overlapping periods</td><td><strong>48</strong></td></tr>
-<tr><td>Forward-return coverage</td><td><strong>99.998%</strong></td></tr>
-<tr><td>Rank IC coverage</td><td><strong>99.976%</strong></td></tr>
-<tr><td>Local test suite</td><td><strong>24 passed</strong></td></tr>
-</table>
+| Check | Observed result |
+|---|---:|
+| Decision-date universe | **5,122** securities |
+| Valid five-session signals | **5,121** securities |
+| 2024 backtest panel | **1,389,119** rows / 5,174 securities |
+| Complete non-overlapping periods | **48** |
+| Forward-return coverage | **99.998%** |
+| Rank IC coverage | **99.976%** |
+| Local test suite | **24 passed** |
 
 ### 2024 Research Snapshot
 
@@ -99,11 +98,11 @@ The live-data run used `panda_data 0.0.12` and completed against the full SH/SZ 
 
 This is a one-year research result, not evidence of durable alpha. The first half had Rank IC `-0.0096`; the second half had `0.0984`. The factor is visibly regime-sensitive.
 
-See the full evidence and limitations in [VALIDATION.md](./VALIDATION.md).
+See [VALIDATION.md](./VALIDATION.md) for the full evidence, stability split, delisting cases and limitations.
 
 ## Quick Start
 
-### 1. Install and run the deterministic demo
+### Deterministic demo
 
 ```powershell
 pip install -r requirements-dev.txt
@@ -119,7 +118,7 @@ python scripts/summarize.py output/demo.json
 
 The demo is synthetic and deterministic. It validates the software contract, not the strategy.
 
-### 2. Run a real PandaData snapshot
+### PandaData snapshot
 
 Credentials are read from environment variables only. They are never written to source, output or cache:
 
@@ -134,7 +133,7 @@ python scripts/factor.py --provider pandadata --all-a `
 python scripts/validate.py output/factor-20241231.json
 ```
 
-### 3. Run a real backtest
+### PandaData backtest
 
 ```powershell
 python scripts/backtest.py --provider pandadata --all-a `
@@ -204,3 +203,7 @@ VALIDATION.md        Real PandaData execution report
 - One year of full-market results is not enough for a multi-cycle conclusion; multi-year and out-of-sample validation remain required.
 
 Read [methodology.md](./references/methodology.md) for the math, [data_guide.md](./references/data_guide.md) for input requirements, and [source_boundary.md](./references/source_boundary.md) before interpreting any result.
+
+## License
+
+[GNU General Public License v3.0](./LICENSE)
