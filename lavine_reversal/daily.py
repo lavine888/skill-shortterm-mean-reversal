@@ -10,9 +10,11 @@ from .config import StrategyConfig
 from .contract import compute_run_id
 from .engine import (
     _boolean_panel,
+    _delisting_settlements,
     _limit_block_reason,
     _numeric_panel,
     _optional_float,
+    _symbol_settlement_prices,
     build_source_context,
     calculate_stats,
 )
@@ -41,6 +43,7 @@ def _market_block_reason(
     limit_up: float | None,
     limit_down: float | None,
     block_st: bool = True,
+    borrowable: bool = True,
 ) -> str | None:
     if price is None:
         return "missing_price"
@@ -50,6 +53,8 @@ def _market_block_reason(
         return "st"
     if not tradable:
         return "non_tradable"
+    if block_st and units < 0 and not borrowable:
+        return "not_borrowable"
     return _limit_block_reason(units, "entry", price, limit_up, limit_down)
 
 
@@ -58,11 +63,11 @@ def _attempt(
     attempt_number: int, requested_units: float | None, requested_notional: float,
     price: float | None, suspended: bool, is_st: bool, tradable: bool,
     limit_up: float | None, limit_down: float | None,
-    cost_rate: float, extra_reason: str | None = None,
+    cost_rate: float, borrowable: bool = True, extra_reason: str | None = None,
 ) -> dict[str, Any]:
     reason = extra_reason or _market_block_reason(
         requested_units or 0.0, price, suspended, is_st, tradable,
-        limit_up, limit_down, block_st=kind == "entry",
+        limit_up, limit_down, block_st=kind == "entry", borrowable=borrowable,
     )
     filled = reason is None and requested_units is not None and requested_notional > 0
     fill_units = float(requested_units) if filled else 0.0
@@ -86,6 +91,7 @@ def _attempt(
         "suspended": suspended,
         "is_st": is_st,
         "tradable": tradable,
+        "borrowable": borrowable,
         "limit_up": limit_up,
         "limit_down": limit_down,
     }
@@ -112,8 +118,10 @@ def run_daily_backtest(
     suspended = _boolean_panel(work, dates, "suspended", True)
     is_st = _boolean_panel(work, dates, "is_st", False)
     tradable = _boolean_panel(work, dates, "tradable", False)
+    borrowable = _boolean_panel(work, dates, "borrowable", True)
     limit_up = _numeric_panel(work, dates, close.columns, "limit_up")
     limit_down = _numeric_panel(work, dates, close.columns, "limit_down")
+    settlement_prices = _symbol_settlement_prices(work)
     date_frames = {
         pd.Timestamp(date): frame.set_index("symbol")
         for date, frame in work.groupby("date", sort=False)
@@ -173,16 +181,53 @@ def run_daily_backtest(
     filled_entries = 0
     filled_exits = 0
     total_cost = 0.0
+    total_short_fee = 0.0
+    settlement_exits = 0
     first_entry = min(entries)
     for date in dates[(dates >= first_entry) & (dates <= end_date)]:
         prices = close.loc[date]
         day_suspended = suspended.loc[date]
         day_is_st = is_st.loc[date]
         day_tradable = tradable.loc[date]
+        day_borrowable = borrowable.loc[date]
         day_limit_up = limit_up.loc[date]
         day_limit_down = limit_down.loc[date]
+        attempts: list[dict[str, Any]] = []
+        traded_notional = 0.0
+        day_cost = 0.0
+
+        for lot_id in list(positions):
+            lot = positions[lot_id]
+            settlement = settlement_prices.get(lot.symbol)
+            delisting = delisting_dates.get(lot.symbol)
+            if settlement is None or delisting is None or date < delisting:
+                continue
+            lot.exit_attempts += 1
+            price = float(settlement)
+            requested_units = -lot.units
+            notional = abs(requested_units * price)
+            cost = cfg.cost_rate * notional
+            attempt = {
+                "order_id": f"{date:%Y%m%d}:settlement:{lot_id}",
+                "lot_id": lot_id, "symbol": lot.symbol, "kind": "settlement",
+                "attempt_number": lot.exit_attempts, "status": "filled", "block_reason": None,
+                "requested_units": requested_units, "requested_notional": notional,
+                "fill_units": requested_units, "fill_price": price, "notional": notional,
+                "cost": cost, "observed_price": price,
+                "suspended": False, "is_st": False, "tradable": True, "borrowable": True,
+                "limit_up": None, "limit_down": None,
+            }
+            attempts.append(attempt)
+            cash -= requested_units * price + cost
+            traded_notional += notional
+            day_cost += cost
+            settlement_exits += 1
+            del positions[lot_id]
+
         for lot in positions.values():
             if _optional_float(prices, lot.symbol) is None:
+                if settlement_prices.get(lot.symbol) is not None and delisting_dates.get(lot.symbol) is not None and date >= delisting_dates[lot.symbol]:
+                    continue
                 delisted = delisting_dates.get(lot.symbol)
                 delisted_text = delisted.strftime("%Y-%m-%d") if delisted is not None else "unknown"
                 raise ValueError(
@@ -191,9 +236,6 @@ def run_daily_backtest(
                     f"effective_exit={lot.effective_exit_date.date()} delisted={delisted_text}"
                 )
 
-        attempts: list[dict[str, Any]] = []
-        traded_notional = 0.0
-        day_cost = 0.0
         due = sorted(
             (lot for lot in positions.values() if date >= lot.effective_exit_date),
             key=lambda lot: (lot.effective_exit_date, lot.lot_id),
@@ -251,7 +293,10 @@ def run_daily_backtest(
                 elif requested_notional <= 0:
                     extra_reason = "no_side_headroom"
                 effective_exit = pd.Timestamp(cohort["scheduled_exit_date"])
-                if cfg.delisting_exit_policy == "last_available_close" and symbol in delisting_dates:
+                if symbol in delisting_dates and settlement_prices.get(symbol) is not None:
+                    if date < delisting_dates[symbol] <= effective_exit:
+                        effective_exit = delisting_dates[symbol]
+                elif cfg.delisting_exit_policy == "last_available_close" and symbol in delisting_dates:
                     if date < delisting_dates[symbol] <= effective_exit:
                         effective_exit = final_dates[symbol]
                         if effective_exit <= date:
@@ -264,6 +309,7 @@ def run_daily_backtest(
                     suspended=bool(day_suspended.get(symbol, True)),
                     is_st=bool(day_is_st.get(symbol, False)),
                     tradable=bool(day_tradable.get(symbol, False)),
+                    borrowable=bool(day_borrowable.get(symbol, True)),
                     limit_up=_optional_float(day_limit_up, symbol),
                     limit_down=_optional_float(day_limit_down, symbol),
                     cost_rate=cfg.cost_rate, extra_reason=extra_reason,
@@ -297,17 +343,21 @@ def run_daily_backtest(
             })
         long_value = sum(max(mark["market_value"], 0.0) for mark in marks)
         short_value = sum(max(-mark["market_value"], 0.0) for mark in marks)
+        short_fee = float(cfg.short_fee_rate / 252.0 * short_value)
+        cash -= short_fee
         nav = cash + sum(mark["market_value"] for mark in marks)
         if nav <= 0:
             raise ValueError(f"portfolio NAV is non-positive on {date.date()}")
         daily_return = nav / previous_nav - 1.0
         total_cost += day_cost
+        total_short_fee += short_fee
         days.append({
             "date": date.strftime("%Y%m%d"), "cash": float(cash),
             "nav": float(nav), "daily_return": float(daily_return),
             "long_value": float(long_value), "short_value": float(short_value),
             "gross_exposure": float((long_value + short_value) / nav),
             "traded_notional": float(traded_notional), "cost": float(day_cost),
+            "short_fee": short_fee,
             "nav_before_entries": float(nav_before_entries),
             "long_headroom": float(long_headroom), "short_headroom": float(short_headroom),
             "marks": marks, "attempts": attempts,
@@ -334,18 +384,23 @@ def run_daily_backtest(
             "suspended_flag": "suspended" in provided_columns,
             "st_flag": "is_st" in provided_columns,
             "tradable_flag": "tradable" in provided_columns,
+            "borrowable_flag": "borrowable" in provided_columns,
+            "delisting_settlement_price": "delisting_settlement_price" in provided_columns,
             "trade_status": "trade_status" in provided_columns,
             "limit_prices": {"limit_up", "limit_down"}.issubset(provided_columns),
             "historical_name": "name" in provided_columns,
             "delisting_date": "de_listed_date" in provided_columns,
             "calendar_source": calendar_source or ("explicit" if calendar is not None else "panel_date_union"),
         },
+        "delisting_settlements": _delisting_settlements(work),
         "cohorts": cohorts,
         "days": days,
         "final_positions": days[-1]["marks"],
         "metrics": {
             **stats,
             "total_cost": float(total_cost),
+            "total_short_fee": float(total_short_fee),
+            "delisting_settlement_exits": settlement_exits,
             "filled_entries": filled_entries,
             "blocked_entries": blocked_entries,
             "filled_exits": filled_exits,

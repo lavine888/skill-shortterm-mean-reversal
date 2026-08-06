@@ -4,6 +4,8 @@
 
 必需字段为 `date`、`symbol`、`close`。同一证券同一天只能有一行，价格必须为正。可选的 `suspended`、`is_st`、`tradable`、`limit_up`、`limit_down` 应是当日点时状态；如果来源只提供当前状态，不应回填到历史。
 
+可选的 `borrowable` 是当日点时空头可借标志；缺少时视为可借但记录为未建模能力。可选的 `delisting_settlement_price` 是证券级退市结算价，与 `de_listed_date` 配对使用；提供后可用于结算持有窗口内退市的仓位，否则保持 fail-closed。
+
 PandaData Provider 使用 `get_stock_daily_post` 的 `trade_status`、`name`、`limit_up` 和 `limit_down`：非零 `trade_status` 映射为停牌，历史名称包含 `ST` 映射为 ST，涨跌停价格用于方向性成交约束。
 
 全市场历史回测应包含当时已上市、尚未退市的证券，并保留退市标的。输出中的 `forward_coverage` 和 `signal_universe_size` 是解释缺失与偏差的必要证据。

@@ -25,7 +25,7 @@ PERIOD_KEYS = {
     "signal_universe_size", "long_symbols", "short_symbols",
     "selected_evidence", "forward_coverage", "rank_ic_sample_size",
     "rank_ic_coverage", "rank_ic", "gross_return", "traded_notional",
-    "cost", "net_return", "forced_delisting_exit_count",
+    "cost", "short_fee", "net_return", "forced_delisting_exit_count",
 }
 EVIDENCE_KEYS = {
     "past_return", "reversal_score", "target_weight", "executed_weight",
@@ -161,12 +161,12 @@ def _validate_factor_evidence(payload: dict[str, Any], evidence_path: str | Path
     if not np.isfinite(frame[numeric].to_numpy(dtype=float)).all():
         raise ValueError("factor evidence contains non-finite required values")
     boolean_columns = [
-        "entry_suspended", "entry_is_st", "entry_tradable",
-        "exit_suspended", "exit_is_st", "exit_tradable",
+        "entry_suspended", "entry_is_st", "entry_tradable", "entry_borrowable",
+        "exit_suspended", "exit_is_st", "exit_tradable", "exit_borrowable",
     ]
     if frame[boolean_columns].isna().any().any():
         raise ValueError("factor evidence contains missing trading-state flags")
-    allowed_reasons = {None, "missing_price", "suspended", "st", "non_tradable", "limit_up", "limit_down", "not_applicable"}
+    allowed_reasons = {None, "missing_price", "suspended", "st", "non_tradable", "not_borrowable", "limit_up", "limit_down", "not_applicable"}
     entry_reasons = {None if pd.isna(value) else value for value in frame["entry_block_reason"]}
     exit_reasons = {None if pd.isna(value) else value for value in frame["exit_block_reason"]}
     if not entry_reasons.issubset(allowed_reasons):
@@ -214,6 +214,8 @@ def _validate_factor_evidence(payload: dict[str, Any], evidence_path: str | Path
                 expected_entry_block = "st"
             elif not row.entry_tradable:
                 expected_entry_block = "non_tradable"
+            elif row.target_weight < 0 and not row.entry_borrowable:
+                expected_entry_block = "not_borrowable"
             else:
                 expected_entry_block = _limit_block_reason(
                     row.target_weight, "entry", row.entry_price,
@@ -237,7 +239,7 @@ def _validate_factor_evidence(payload: dict[str, Any], evidence_path: str | Path
                     row.exit_limit_up if pd.notna(row.exit_limit_up) else None,
                     row.exit_limit_down if pd.notna(row.exit_limit_down) else None,
                 )
-            if item["exit_status"] == "forced_delisting_exit":
+            if item["exit_status"] in ("forced_delisting_exit", "delisting_settlement_exit"):
                 expected_exit_block = None
             row_exit_reason = None if pd.isna(row.exit_block_reason) else row.exit_block_reason
             if row_exit_reason != expected_exit_block or item["exit_block_reason"] != expected_exit_block:
@@ -316,6 +318,7 @@ def validate_result(payload: dict[str, Any], evidence_path: str | Path | None = 
         gross_return = 0.0
         priced = 0
         forced_delisting_exits = 0
+        settlement_exits = 0
         for symbol in selected:
             item = evidence[symbol]
             _require_keys(item, EVIDENCE_KEYS, f"{path}.selected_evidence.{symbol}")
@@ -327,7 +330,7 @@ def validate_result(payload: dict[str, Any], evidence_path: str | Path | None = 
             if item["entry_status"] == "filled":
                 if not _close(executed, target) or item["entry_price"] is None or item["entry_block_reason"] is not None:
                     raise ValueError(f"{path} has inconsistent filled entry for {symbol}")
-                if item["exit_status"] not in {"filled", "forced_delisting_exit"} or item["exit_price"] is None or item["forward_return"] is None:
+                if item["exit_status"] not in {"filled", "forced_delisting_exit", "delisting_settlement_exit"} or item["exit_price"] is None or item["forward_return"] is None:
                     raise ValueError(f"{path} has unresolved filled position for {symbol}")
                 if not _valid_date(item["actual_exit_date"]) or not period["entry_date"] <= item["actual_exit_date"] <= period["exit_date"]:
                     raise ValueError(f"{path} has invalid actual exit date for {symbol}")
@@ -339,6 +342,7 @@ def validate_result(payload: dict[str, Any], evidence_path: str | Path | None = 
                 gross_return += executed * float(item["forward_return"])
                 priced += 1
                 forced_delisting_exits += item["exit_status"] == "forced_delisting_exit"
+                settlement_exits += item["exit_status"] == "delisting_settlement_exit"
             elif item["entry_status"] == "unfilled":
                 if not _close(executed, 0.0) or item["entry_price"] is not None or item["forward_return"] is not None or item["actual_exit_date"] is not None or not item["entry_block_reason"]:
                     raise ValueError(f"{path} has inconsistent unfilled entry for {symbol}")
@@ -360,9 +364,19 @@ def validate_result(payload: dict[str, Any], evidence_path: str | Path | None = 
             raise ValueError(f"{path} gross return is inconsistent")
         if period["forced_delisting_exit_count"] != forced_delisting_exits:
             raise ValueError(f"{path} forced delisting exit count is inconsistent")
+        if period["delisting_settlement_exit_count"] != settlement_exits:
+            raise ValueError(f"{path} delisting settlement exit count is inconsistent")
         if not _close(period["cost"], cost_rate * period["traded_notional"]):
             raise ValueError(f"{path} cost is inconsistent")
-        if not _close(period["net_return"], period["gross_return"] - period["cost"]):
+        short_executed = sum(
+            abs(item["executed_weight"])
+            for item in evidence.values()
+            if item["entry_status"] == "filled" and item["executed_weight"] < 0
+        )
+        expected_short_fee = float(config["short_fee_rate"]) * (int(config["hold_days"]) / 252.0) * short_executed
+        if not _close(period["short_fee"], expected_short_fee):
+            raise ValueError(f"{path} short fee is inconsistent")
+        if not _close(period["net_return"], period["gross_return"] - period["cost"] - period["short_fee"]):
             raise ValueError(f"{path} net return is inconsistent")
 
     metrics = payload["metrics"]
@@ -383,6 +397,8 @@ def validate_result(payload: dict[str, Any], evidence_path: str | Path | None = 
     rank_ics = [period["rank_ic"] for period in payload["periods"] if period["rank_ic"] is not None]
     expected_means["mean_rank_ic"] = np.mean(rank_ics) if rank_ics else None
     expected_means["forced_delisting_exits"] = sum(period["forced_delisting_exit_count"] for period in payload["periods"])
+    expected_means["delisting_settlement_exits"] = sum(period["delisting_settlement_exit_count"] for period in payload["periods"])
+    expected_means["total_short_fee"] = sum(period["short_fee"] for period in payload["periods"])
     for key, expected in expected_means.items():
         actual = metrics.get(key)
         if expected is None:

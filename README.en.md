@@ -7,9 +7,9 @@
 Point-in-time signals · Drift-aware turnover · PandaData · Auditable outputs
 
 [![CI](https://github.com/lavine888/skill-shortterm-mean-reversal/actions/workflows/validate.yml/badge.svg)](https://github.com/lavine888/skill-shortterm-mean-reversal/actions/workflows/validate.yml)
-[![Version](https://img.shields.io/badge/version-0.7.0-2563EB)](./CHANGELOG.md)
-[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-47%20passed-2E7D32)](./tests)
+[![Version](https://img.shields.io/badge/version-2.0.0-2563EB)](./CHANGELOG.md)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Tests](https://img.shields.io/badge/tests-56%20passed-2E7D32)](./tests)
 [![PandaData](https://img.shields.io/badge/PandaData-0.0.12-0F766E)](./VALIDATION.md)
 [![License](https://img.shields.io/badge/license-GPL--3.0-4B5563)](./LICENSE)
 
@@ -34,7 +34,7 @@ Point-in-time signals · Drift-aware turnover · PandaData · Auditable outputs
 </tr>
 <tr>
 <td><strong>Evidence</strong><br>Point-in-time inputs</td>
-<td><strong>Accounting</strong><br>Drift-aware turnover</td>
+<td><strong>Accounting</strong><br>Drift-aware turnover + borrow fee</td>
 <td><strong>Data</strong><br>PandaData or frozen panel</td>
 <td><strong>Status</strong><br>Runnable / experimental</td>
 </tr>
@@ -52,9 +52,12 @@ Point-in-time signals · Drift-aware turnover · PandaData · Auditable outputs
 | Holding | Entry close through the close five market sessions later |
 | Rebalance | Every five market sessions; `rebalance_every == hold_days` |
 | Cost | `cost_rate × actual traded notional` after weight drift |
+| Borrow fee | Annualized `short_fee_rate`; period-based in period mode, accrued daily in `daily_nav` |
+| Borrowable | Optional point-in-time `borrowable` column; unborrowable short entries are blocked |
+| Delisting settlement | Optional `delisting_settlement_price`; settles at that value when provided |
 | Missing entry | No fill; capital remains in cash |
 | Missing exit | Fail-closed by default |
-| Delisting | Optional, explicit `last_available_close` policy only |
+| Delisting | Explicit `last_available_close` policy or a provided settlement price |
 
 ### Signal Lifecycle
 
@@ -83,8 +86,9 @@ The live-data run used `panda_data 0.0.12` and completed against the full Shangh
 | Complete non-overlapping periods | **48** |
 | Forward-return coverage | **99.998%** |
 | Rank IC coverage | **99.976%** |
-| Local test suite | **47 passed** |
+| Local test suite | **56 passed** |
 | 0.7.0 full-market daily checkpoint | **113 days / 605 blocked-exit attempts** |
+| 2.0.0 demo OOS 2021-2025 (daily_nav) | **5 positive annual folds** |
 
 ### 2024 Historical Research Snapshot (schema 3)
 
@@ -126,6 +130,16 @@ python scripts/validate.py output/demo-daily.json
 ```
 
 The demo is synthetic and deterministic. It validates the software contract, not the strategy.
+
+### Multi-year out-of-sample validation (synthetic)
+
+```powershell
+python scripts/oos_validation.py --provider demo `
+  --start 20210101 --end 20251231 --accounting-mode daily_nav `
+  --output output/oos-demo-daily.json
+```
+
+Runs each calendar year as a chronological out-of-sample fold and writes a deterministic summary JSON. The demo fold returns validate the software, not the strategy; run the same command against a frozen multi-year panel or PandaData (with credentials) for research evidence.
 
 ### PandaData snapshot
 
@@ -174,7 +188,7 @@ CSV or Parquet input must contain:
 | `symbol` | Security code, for example `600519.SH` |
 | `close` | Post-adjusted close |
 
-Optional point-in-time fields are `suspended`, `is_st`, `tradable`, `limit_up` and `limit_down`. Boolean columns accept only explicit values such as `true/false`, `1/0` or `yes/no`; invalid prices, blank symbols, weekend dates and conflicting duplicate rows fail closed.
+Optional point-in-time fields are `suspended`, `is_st`, `tradable`, `borrowable`, `limit_up` and `limit_down`. `borrowable` gates new short entries. Boolean columns accept only explicit values such as `true/false`, `1/0` or `yes/no`; invalid prices, blank symbols, weekend dates and conflicting duplicate rows fail closed. A symbol-level `delisting_settlement_price` paired with `de_listed_date` provides a verifiable delisting settlement value.
 
 ```powershell
 python scripts/backtest.py --provider file `
@@ -206,7 +220,7 @@ The validator rejects non-finite numbers, invalid chronology, inconsistent retur
 
 ```text
 lavine_reversal/     factor logic, normalization, accounting, providers, validation
-scripts/             factor, backtest, validate, summarize, packaging
+scripts/             factor, backtest, validate, summarize, OOS validation, packaging
 tests/               point-in-time, execution, delisting, data and contract tests
 references/          methodology, data contract and source boundaries
 SKILL.md             Agent Skill entrypoint and qsh-form
@@ -224,9 +238,10 @@ The deterministic ZIP contains both READMEs and a `MANIFEST.sha256`. The package
 ## Boundaries
 
 - A-share cash equities generally cannot provide the individual-stock short leg used by this diagnostic.
-- Borrow fees, availability, recalls, limit-order queues and intraday slippage are not modeled.
-- `last_available_close` permits an attempt on the last quoted session but never overrides suspension or price-limit blocks; delisting settlement remains unresolved.
+- Version 2.0.0 models borrow fees, borrowability and delisting settlement prices, but still does not model recalls, borrow quantities, limit-order queues or intraday slippage. The `borrowable` and `delisting_settlement_price` columns are data inputs the user must source and verify.
+- `last_available_close` permits an attempt on the last quoted session but never overrides suspension or price-limit blocks; without a verifiable delisting settlement value the position still fails closed.
 - Scheduled signal cohorts do not overlap. `daily_nav` can carry blocked positions across cohorts, but active overlapping sleeves are not supported.
+- A multi-year out-of-sample entrypoint (`scripts/oos_validation.py`) is ready; the demo covers 2021-2025. A real full-market multi-year run still requires PandaData credentials.
 - One year of full-market results is not enough for a multi-cycle conclusion; multi-year and out-of-sample validation remain required.
 
 Read [methodology.md](./references/methodology.md) for the math, [data_guide.md](./references/data_guide.md) for input requirements, and [source_boundary.md](./references/source_boundary.md) before interpreting any result.

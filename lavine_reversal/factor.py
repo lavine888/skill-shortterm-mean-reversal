@@ -45,6 +45,14 @@ def normalize_panel(panel: pd.DataFrame) -> pd.DataFrame:
         if column in work:
             work[column] = pd.to_numeric(work[column], errors="coerce")
             work.loc[~np.isfinite(work[column]) | ~work[column].gt(0), column] = np.nan
+    if "delisting_settlement_price" in work:
+        work["delisting_settlement_price"] = pd.to_numeric(
+            work["delisting_settlement_price"], errors="coerce"
+        )
+        work.loc[
+            ~np.isfinite(work["delisting_settlement_price"]) | ~work["delisting_settlement_price"].gt(0),
+            "delisting_settlement_price",
+        ] = np.nan
     if work["date"].isna().any() or work["symbol"].isna().any() or work["symbol"].eq("").any():
         raise ValueError("date and symbol must not be null")
     if work["date"].dt.dayofweek.ge(5).any():
@@ -56,7 +64,7 @@ def normalize_panel(panel: pd.DataFrame) -> pd.DataFrame:
     invalid_close = ~np.isfinite(work["close"].to_numpy(dtype=float)) | ~work["close"].gt(0).to_numpy()
     if invalid_close.any():
         raise ValueError(f"close must be finite and positive; invalid rows={int(invalid_close.sum())}")
-    for column, default in (("suspended", False), ("is_st", False), ("tradable", True)):
+    for column, default in (("suspended", False), ("is_st", False), ("tradable", True), ("borrowable", True)):
         if column not in work:
             work[column] = default
         else:

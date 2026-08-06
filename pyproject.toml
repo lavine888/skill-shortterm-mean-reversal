@@ -4,16 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lavine-shortterm-mean-reversal"
-version = "0.7.0"
+version = "2.0.0"
 description = "Auditable Q58 five-session A-share short-term reversal factor research"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 license = {text = "GPL-3.0-only"}
 dependencies = [
   "panda_data==0.0.12",
   "pandas>=2.0,<4",
   "numpy>=1.24,<3",
   "pyarrow>=14,<26",
+  "tomli>=2.0; python_version < '3.11'",
 ]
 
 [tool.setuptools.packages.find]

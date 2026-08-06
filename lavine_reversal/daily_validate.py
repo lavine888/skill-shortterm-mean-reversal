@@ -13,11 +13,12 @@ from .version import SCHEMA_VERSION, SKILL_NAME, SKILL_VERSION
 TOP_LEVEL_KEYS = {
     "schema_version", "artifact_type", "accounting_mode", "skill", "skill_version",
     "source", "source_status", "start", "end", "config", "source_context",
-    "data_capabilities", "cohorts", "days", "final_positions", "metrics", "run_id",
+    "data_capabilities", "delisting_settlements", "cohorts", "days", "final_positions",
+    "metrics", "run_id",
 }
 DAY_KEYS = {
     "date", "cash", "nav", "daily_return", "long_value", "short_value",
-    "gross_exposure", "traded_notional", "cost", "nav_before_entries",
+    "gross_exposure", "traded_notional", "cost", "short_fee", "nav_before_entries",
     "long_headroom", "short_headroom", "marks", "attempts",
 }
 MARK_KEYS = {
@@ -28,7 +29,7 @@ ATTEMPT_KEYS = {
     "order_id", "lot_id", "symbol", "kind", "attempt_number", "status",
     "block_reason", "requested_units", "requested_notional", "fill_units",
     "fill_price", "notional", "cost", "observed_price", "suspended", "is_st",
-    "tradable", "limit_up", "limit_down",
+    "tradable", "borrowable", "limit_up", "limit_down",
 }
 COHORT_KEYS = {
     "cohort_id", "decision_date", "entry_date", "scheduled_exit_date",
@@ -105,8 +106,9 @@ def validate_daily_result(payload: dict[str, Any]) -> None:
     cash = 1.0
     previous_nav = 1.0
     previous_date = ""
-    filled_entries = blocked_entries = filled_exits = blocked_exits = 0
+    filled_entries = blocked_entries = filled_exits = blocked_exits = settlement_exits = 0
     total_cost = 0.0
+    total_short_fee = 0.0
     daily_returns: list[float] = []
 
     for day_index, day in enumerate(payload["days"]):
@@ -120,23 +122,55 @@ def validate_daily_result(payload: dict[str, Any]) -> None:
         if any(set(attempt) != ATTEMPT_KEYS for attempt in attempts):
             raise ValueError(f"invalid order attempt contract on {date}")
         for attempt in attempts:
-            if not all(isinstance(attempt[key], bool) for key in ("suspended", "is_st", "tradable")):
+            if not all(isinstance(attempt[key], bool) for key in ("suspended", "is_st", "tradable", "borrowable")):
                 raise ValueError(f"invalid observed trading flags on {date}")
             for key in ("observed_price", "limit_up", "limit_down"):
                 if attempt[key] is not None and not _valid_number(attempt[key], positive=True):
                     raise ValueError(f"invalid observed {key} on {date}")
         kinds = [attempt["kind"] for attempt in attempts]
-        if not set(kinds).issubset({"entry", "exit"}):
+        if not set(kinds).issubset({"entry", "exit", "settlement"}):
             raise ValueError(f"invalid order kind on {date}")
-        if "entry" in kinds and "exit" in kinds and max(i for i, kind in enumerate(kinds) if kind == "exit") > min(i for i, kind in enumerate(kinds) if kind == "entry"):
-            raise ValueError(f"exit attempts must precede entries on {date}")
+        if "entry" in kinds and (set(kinds) - {"entry"}) and max(i for i, kind in enumerate(kinds) if kind in ("exit", "settlement")) > min(i for i, kind in enumerate(kinds) if kind == "entry"):
+            raise ValueError(f"exit and settlement attempts must precede entries on {date}")
+
+        settlement_attempts = [item for item in attempts if item["kind"] == "settlement"]
+        settlements = payload.get("delisting_settlements", {})
+        day_notional = 0.0
+        day_cost = 0.0
+        for attempt in settlement_attempts:
+            lot_id = attempt["lot_id"]
+            if lot_id not in positions or attempt["symbol"] != positions[lot_id]["symbol"]:
+                raise ValueError(f"settlement references an unknown lot on {date}")
+            expected = settlements.get(attempt["symbol"])
+            if expected is None:
+                raise ValueError(f"settlement has no recorded delisting value on {date}")
+            if attempt["order_id"] in order_ids:
+                raise ValueError("duplicate order ID")
+            order_ids.add(attempt["order_id"])
+            exit_attempts[lot_id] = exit_attempts.get(lot_id, 0) + 1
+            if attempt["attempt_number"] != exit_attempts[lot_id]:
+                raise ValueError(f"invalid settlement attempt sequence for {lot_id}")
+            expected_units = -positions[lot_id]["units"]
+            if not _close(attempt["requested_units"], expected_units):
+                raise ValueError(f"settlement units do not close lot {lot_id}")
+            if attempt["status"] != "filled" or attempt["block_reason"] is not None:
+                raise ValueError(f"settlement was not filled for {lot_id}")
+            if attempt["fill_price"] is None or not _close(attempt["fill_price"], float(expected["price"])):
+                raise ValueError(f"settlement price is inconsistent for {lot_id}")
+            expected_notional = abs(expected_units * float(attempt["fill_price"]))
+            expected_cost = cost_rate * expected_notional
+            if not _close(attempt["fill_units"], expected_units) or not _close(attempt["notional"], expected_notional) or not _close(attempt["cost"], expected_cost):
+                raise ValueError(f"settlement accounting is inconsistent for {lot_id}")
+            cash -= expected_units * float(attempt["fill_price"]) + expected_cost
+            day_notional += expected_notional
+            day_cost += expected_cost
+            del positions[lot_id]
+            settlement_exits += 1
 
         due = {lot_id for lot_id, lot in positions.items() if date >= lot["effective_exit_date"]}
         observed_exits = {attempt["lot_id"] for attempt in attempts if attempt["kind"] == "exit"}
         if observed_exits != due:
             raise ValueError(f"pending exits were not attempted exactly once on {date}")
-        day_notional = 0.0
-        day_cost = 0.0
 
         for attempt in (item for item in attempts if item["kind"] == "exit"):
             lot_id = attempt["lot_id"]
@@ -238,6 +272,7 @@ def validate_daily_result(payload: dict[str, Any]) -> None:
                     attempt["requested_units"] or 0.0, attempt["observed_price"],
                     attempt["suspended"], attempt["is_st"], attempt["tradable"],
                     attempt["limit_up"], attempt["limit_down"], block_st=True,
+                    borrowable=attempt["borrowable"],
                 )
             if expected_request > 0 and attempt["observed_price"] is not None:
                 expected_units = spec["direction"] * expected_request / float(attempt["observed_price"])
@@ -285,6 +320,8 @@ def validate_daily_result(payload: dict[str, Any]) -> None:
             marked_total += market_value
             long_value += max(market_value, 0.0)
             short_value += max(-market_value, 0.0)
+        short_fee = float(config["short_fee_rate"]) / 252.0 * short_value
+        cash -= short_fee
         nav = cash + marked_total
         daily_return = nav / previous_nav - 1.0
         if not _close(day["cash"], cash) or not _close(day["nav"], nav) or not _close(day["daily_return"], daily_return):
@@ -293,7 +330,10 @@ def validate_daily_result(payload: dict[str, Any]) -> None:
             raise ValueError(f"daily exposure is inconsistent on {date}")
         if not _close(day["traded_notional"], day_notional) or not _close(day["cost"], day_cost):
             raise ValueError(f"daily trading accounting is inconsistent on {date}")
+        if not _close(day["short_fee"], short_fee):
+            raise ValueError(f"daily short fee is inconsistent on {date}")
         total_cost += day_cost
+        total_short_fee += short_fee
         daily_returns.append(daily_return)
         previous_nav = nav
 
@@ -312,10 +352,12 @@ def validate_daily_result(payload: dict[str, Any]) -> None:
             raise ValueError(f"daily metric {key} is inconsistent")
     expected_counts = {
         "total_cost": total_cost,
+        "total_short_fee": total_short_fee,
         "filled_entries": filled_entries,
         "blocked_entries": blocked_entries,
         "filled_exits": filled_exits,
         "blocked_exit_attempts": blocked_exits,
+        "delisting_settlement_exits": settlement_exits,
         "open_position_count": len(positions),
         "unresolved_exit_count": sum(payload["days"][-1]["date"] >= lot["effective_exit_date"] for lot in positions.values()),
     }

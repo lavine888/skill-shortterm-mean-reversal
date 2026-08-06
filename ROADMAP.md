@@ -1,5 +1,13 @@
 # Roadmap
 
+## Completed in 2.0.0: Borrow, Borrowability and Delisting Settlement
+
+- Added an annualized short borrow fee (`short_fee_rate`) in both period and daily NAV accounting.
+- Added point-in-time `borrowable` gating for new short entries.
+- Added symbol-level `delisting_settlement_price` to settle positions of securities that delist within the holding window.
+- Added a multi-year chronological out-of-sample validation entrypoint (`scripts/oos_validation.py`).
+- Lowered the Python floor to 3.10 with a `tomli` fallback for `tomllib`.
+
 ## Completed in 0.7.0: Deferred Exit and Daily NAV
 
 - Carry positions that cannot exit at limit-down, limit-up or suspension instead of assuming a fill.
@@ -10,12 +18,12 @@
 
 The ledger now carries and retries ordinary blocked exits. It still fails closed when an open security disappears after delisting without a verifiable settlement value.
 
-## P0: Delisting Settlement Evidence
+## P0: Delisting Settlement Evidence (partially addressed in 2.0.0)
 
-- Source exchange-backed delisting settlement or transfer-board values.
-- Distinguish cash cancellation, transfer to another venue and unresolved beneficial ownership.
-- Replay settlement cash flows without retroactively changing prior NAV marks.
-- Keep `error` as the default when no independently verifiable settlement value exists.
+- Source exchange-backed delisting settlement or transfer-board values — now accepted as an optional `delisting_settlement_price` input column.
+- Distinguish cash cancellation, transfer to another venue and unresolved beneficial ownership — still open.
+- Replay settlement cash flows without retroactively changing prior NAV marks — settlement exits are recorded as explicit ledger attempts.
+- Keep `error` as the default when no independently verifiable settlement value exists — unchanged.
 
 ## Completed in 0.5.0: Independent Factor Evidence
 
@@ -30,7 +38,7 @@ The remaining work is to freeze and publish a provider-permitted multi-year evid
 
 - Validate the historical universe against an independent exchange source.
 - Add delisting announcement/last-trading-day evidence visible before execution.
-- Model borrow availability, fees and recalls for the short leg.
+- Model borrow recalls and executable borrow queues for the short leg — fee and availability are now modeled; recalls and queues remain open.
 
 ## Completed in 0.6.0: Calendar and Daily Trading States
 
@@ -39,10 +47,10 @@ The remaining work is to freeze and publish a provider-permitted multi-year evid
 - Added side-aware entry and exit constraints for limit-up and limit-down sessions.
 - Bound trading states, limit prices and block reasons into JSON and full factor evidence.
 
-## P1: Research Validation
+## P1: Research Validation (partially addressed in 2.0.0)
 
-- Run a multi-year full-market sample with rolling and chronological out-of-sample splits.
-- Report cost, holding-period, decile-width and market-regime sensitivity.
+- Run a multi-year full-market sample with rolling and chronological out-of-sample splits — `scripts/oos_validation.py` provides the chronological split entrypoint; run against a frozen multi-year panel or PandaData with credentials.
+- Report cost, holding-period, decile-width and market-regime sensitivity — cost and short-fee are configurable; holding-period/decile sensitivity analysis remains open.
 - Compare long-short research returns with executable long-only and index-hedged variants.
 
 ## P2: Distribution

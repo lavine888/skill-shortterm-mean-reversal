@@ -49,7 +49,13 @@ Use this skill for Q58 research: rank A-shares by their trailing five-market-ses
 5. Select deterministic bottom/top deciles, with 0.5 long and 0.5 short gross notional.
 6. Leave missing, suspended, ST or directionally limit-blocked entries in cash. In `daily_nav` mode, carry blocked exits and retry every market session while reserving their side budget.
 7. Measure returns from the next market close through the close five sessions later.
-8. Deduct one-way costs from drift-adjusted traded notional and report Rank IC, turnover, coverage and drawdown.
+8. Deduct one-way costs from drift-adjusted traded notional, an optional annualized short borrow fee, and report Rank IC, turnover, coverage and drawdown.
+
+## Execution Modeling (2.0.0)
+
+- **Borrow availability**: an optional point-in-time `borrowable` column gates short entries. A short target that is not borrowable at the entry session is left in cash with reason `not_borrowable`. Without the column the capability is reported `borrowable_flag: false` and shorts are treated as borrowable (unmodeled).
+- **Short borrow fee**: `--short-fee-rate` is an annualized fee charged on short notional while held. Period mode charges `rate * hold_days/252 * |short executed weight|`; `daily_nav` mode accrues `rate/252 * short mark value` each session. Default `0.0` keeps legacy results unchanged.
+- **Delisting settlement price**: an optional symbol-level `delisting_settlement_price` column, combined with `de_listed_date`, provides a verifiable post-delisting settlement value. When a held position's security delists within the holding window, the position settles at that price on the delisting date (`delisting_settlement_exit`) instead of failing closed. Without the column the historical fail-closed behavior is unchanged.
 
 ## Run
 
@@ -65,12 +71,20 @@ python scripts/backtest.py --provider demo --accounting-mode daily_nav `
 python scripts/validate.py output/demo-daily.json
 ```
 
+Run the multi-year chronological out-of-sample validation on synthetic data:
+
+```powershell
+python scripts/oos_validation.py --provider demo `
+  --start 20210101 --end 20251231 --accounting-mode daily_nav `
+  --output output/oos-demo-daily.json
+```
+
 Run a frozen CSV or Parquet panel containing `date`, `symbol`, and post-adjusted `close`:
 
 ```powershell
 python scripts/backtest.py --provider file --input data/daily.parquet `
   --accounting-mode daily_nav --start 20210101 --end 20251231 `
-  --cost-rate 0.001 --output output/backtest.json
+  --cost-rate 0.001 --short-fee-rate 0.06 --output output/backtest.json
 ```
 
 PandaData credentials are read from environment variables:
@@ -94,6 +108,6 @@ Use `scripts/summarize.py` only after `scripts/validate.py` passes. `last_availa
 
 ## Safety Boundary
 
-The long-short portfolio is a factor research diagnostic, not a directly executable A-share cash-equity strategy. A-shares cannot generally be shorted; borrow availability, queue priority, intraday slippage and forced delisting outcomes are not fully modeled. Daily limit-up/limit-down closes block directionally impossible actions but do not prove an executable fill away from the limit. Do not describe demo or backtest output as live performance or investment advice.
+The long-short portfolio is a factor research diagnostic, not a directly executable A-share cash-equity strategy. A-shares cannot generally be shorted; borrow availability, fees, recall, queue priority, intraday slippage and forced delisting outcomes are only partially modeled. Daily limit-up/limit-down closes block directionally impossible actions but do not prove an executable fill away from the limit. A `borrowable` column and `delisting_settlement_price` improve the model but remain data-driven inputs the user must source and verify. Do not describe demo or backtest output as live performance or investment advice.
 
 Read `references/methodology.md` and `references/data_guide.md` before interpreting results.

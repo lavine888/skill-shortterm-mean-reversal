@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.0.0 - 2026-08-06
+
+- 补齐融券费建模：新增 `short_fee_rate`（年化）配置，周期模式按 `rate * hold_days/252 * 空头已成交权重`、`daily_nav` 模式按 `rate/252 * 当日空头市值` 计费并逐日记录，校验器独立重算。
+- 补齐可借券建模：新增可选的 `borrowable` 点时布尔列，空头目标在进场日不可借时以 `not_borrowable` 阻断并保留现金；缺少该列时能力记录为未建模。
+- 补齐退市结算价建模：新增可选的证券级 `delisting_settlement_price` 列，配合 `de_listed_date` 在持有窗口内退市时按该价格结算（`delisting_settlement_exit`），不再 fail-closed；未提供时行为不变。
+- 新增 `scripts/oos_validation.py`：多年度时序样本外验证入口，demo 合成数据默认覆盖 2021-2025，按年运行并汇总。
+- 降级 tomllib 兼容：Python 3.10 通过 `tomli` 回退，`requires-python` 放宽至 `>=3.10`，CI 改为 3.10/3.11 矩阵。
+- 证据 schema 升级为 3（新增 `entry_borrowable`/`exit_borrowable`），结果 schema 升级为 8；测试增至 56 项。
+
 ## 0.7.0 - 2026-08-03
 
 - 新增 `daily_nav` 逐日现金、持仓、订单与 NAV 会计模式。

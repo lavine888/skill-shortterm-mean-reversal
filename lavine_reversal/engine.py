@@ -49,6 +49,37 @@ def _boolean_panel(
     return panel.reindex(dates).fillna(fill).astype(bool)
 
 
+def _symbol_settlement_prices(work: pd.DataFrame) -> dict[str, float]:
+    if "delisting_settlement_price" not in work:
+        return {}
+    per_symbol = (
+        work.loc[work["delisting_settlement_price"].notna()]
+        .groupby("symbol")["delisting_settlement_price"]
+        .first()
+    )
+    return {symbol: float(value) for symbol, value in per_symbol.items()}
+
+
+def _delisting_settlements(work: pd.DataFrame) -> dict[str, dict[str, str | float]]:
+    if "delisting_settlement_price" not in work:
+        return {}
+    result: dict[str, dict[str, str | float]] = {}
+    for symbol, own in work.groupby("symbol"):
+        price = pd.to_numeric(own["delisting_settlement_price"], errors="coerce").dropna()
+        if price.empty:
+            continue
+        if "de_listed_date" not in own:
+            continue
+        delisted = pd.to_datetime(own["de_listed_date"], format="mixed", errors="coerce").dropna()
+        if delisted.empty:
+            continue
+        result[symbol] = {
+            "date": pd.Timestamp(delisted.iloc[0]).strftime("%Y%m%d"),
+            "price": float(price.iloc[0]),
+        }
+    return result
+
+
 def _numeric_panel(
     work: pd.DataFrame, dates: pd.DatetimeIndex, columns: pd.Index, column: str,
 ) -> pd.DataFrame:
@@ -84,10 +115,12 @@ def _optional_float(values: pd.Series, symbol: str) -> float | None:
 
 
 def build_source_context(work: pd.DataFrame, dates: pd.DatetimeIndex) -> dict[str, Any]:
-    digest_columns = ["date", "symbol", "close", "suspended", "is_st", "tradable"]
+    digest_columns = ["date", "symbol", "close", "suspended", "is_st", "tradable", "borrowable"]
     digest_columns.extend(column for column in ("limit_up", "limit_down") if column in work)
     if "de_listed_date" in work:
         digest_columns.append("de_listed_date")
+    if "delisting_settlement_price" in work:
+        digest_columns.append("delisting_settlement_price")
     digest_frame = work[digest_columns].copy()
     digest_frame["date"] = digest_frame["date"].dt.strftime("%Y%m%d")
     if "de_listed_date" in digest_frame:
@@ -131,9 +164,11 @@ def run_backtest(
     suspended = _boolean_panel(work, dates, "suspended", True)
     is_st = _boolean_panel(work, dates, "is_st", False)
     tradable = _boolean_panel(work, dates, "tradable", False)
+    borrowable = _boolean_panel(work, dates, "borrowable", True)
     executable = (~suspended) & (~is_st) & tradable
     limit_up = _numeric_panel(work, dates, close.columns, "limit_up")
     limit_down = _numeric_panel(work, dates, close.columns, "limit_down")
+    settlement_prices = _symbol_settlement_prices(work)
     date_frames = {
         pd.Timestamp(date): frame.set_index("symbol")
         for date, frame in work.groupby("date", sort=False)
@@ -166,6 +201,7 @@ def run_backtest(
         entry_suspended, exit_suspended = suspended.loc[entry], suspended.loc[exit_date]
         entry_is_st, exit_is_st = is_st.loc[entry], is_st.loc[exit_date]
         entry_tradable, exit_tradable = tradable.loc[entry], tradable.loc[exit_date]
+        entry_borrowable, exit_borrowable = borrowable.loc[entry], borrowable.loc[exit_date]
         entry_limit_up, exit_limit_up = limit_up.loc[entry], limit_up.loc[exit_date]
         entry_limit_down, exit_limit_down = limit_down.loc[entry], limit_down.loc[exit_date]
         all_forward = exit_prices / entry_prices - 1.0
@@ -178,6 +214,7 @@ def run_backtest(
         evidence: dict[str, dict[str, Any]] = {}
         unresolved_exit: dict[str, str] = {}
         forced_exit_symbols: set[str] = set()
+        settlement_exit_symbols: set[str] = set()
         for symbol, target_weight in target_weights.items():
             entry_price_value = _optional_float(entry_prices, symbol)
             entry_up_value = _optional_float(entry_limit_up, symbol)
@@ -190,6 +227,8 @@ def run_backtest(
                 entry_block_reason = "st"
             elif not bool(entry_tradable.get(symbol, False)) or not bool(entry_executable.get(symbol, False)):
                 entry_block_reason = "non_tradable"
+            elif target_weight < 0 and not bool(entry_borrowable.get(symbol, True)):
+                entry_block_reason = "not_borrowable"
             else:
                 entry_block_reason = _limit_block_reason(
                     target_weight, "entry", entry_price_value,
@@ -217,27 +256,37 @@ def run_backtest(
             actual_exit_date = exit_date if can_exit else None
             actual_exit_price = exit_price_value if can_exit else None
             exit_label = "filled" if can_exit else ("not_applicable" if not can_enter else "unresolved")
-            if can_enter and not can_exit and cfg.delisting_exit_policy == "last_available_close" and "de_listed_date" in work:
+            if can_enter and not can_exit and "de_listed_date" in work:
                 own = work.loc[work["symbol"] == symbol]
                 delisted_values = pd.to_datetime(own["de_listed_date"], format="mixed", errors="coerce").dropna()
                 delisted_date = delisted_values.iloc[0] if not delisted_values.empty else None
-                candidates = own.loc[(own["date"] >= entry) & (own["date"] < delisted_date)] if delisted_date is not None and entry < delisted_date <= exit_date else own.iloc[0:0]
-                if not candidates.empty:
-                    forced = candidates.sort_values("date").iloc[-1]
-                    forced_executable = not bool(forced["suspended"]) and bool(forced["tradable"])
-                    forced_price = float(forced["close"])
-                    forced_up = float(forced["limit_up"]) if "limit_up" in forced and pd.notna(forced["limit_up"]) else None
-                    forced_down = float(forced["limit_down"]) if "limit_down" in forced and pd.notna(forced["limit_down"]) else None
-                    forced_limit_reason = _limit_block_reason(
-                        target_weight, "exit", forced_price, forced_up, forced_down,
-                    )
-                    if forced_executable and forced_limit_reason is None:
-                        actual_exit_date = pd.Timestamp(forced["date"])
-                        actual_exit_price = forced_price
+                if delisted_date is not None and entry < delisted_date <= exit_date:
+                    settlement = settlement_prices.get(symbol)
+                    if settlement is not None:
+                        actual_exit_date = delisted_date
+                        actual_exit_price = settlement
                         can_exit = True
-                        exit_label = "forced_delisting_exit"
+                        exit_label = "delisting_settlement_exit"
                         exit_block_reason = None
-                        forced_exit_symbols.add(symbol)
+                        settlement_exit_symbols.add(symbol)
+                    elif cfg.delisting_exit_policy == "last_available_close":
+                        candidates = own.loc[(own["date"] >= entry) & (own["date"] < delisted_date)]
+                        if not candidates.empty:
+                            forced = candidates.sort_values("date").iloc[-1]
+                            forced_executable = not bool(forced["suspended"]) and bool(forced["tradable"])
+                            forced_price = float(forced["close"])
+                            forced_up = float(forced["limit_up"]) if "limit_up" in forced and pd.notna(forced["limit_up"]) else None
+                            forced_down = float(forced["limit_down"]) if "limit_down" in forced and pd.notna(forced["limit_down"]) else None
+                            forced_limit_reason = _limit_block_reason(
+                                target_weight, "exit", forced_price, forced_up, forced_down,
+                            )
+                            if forced_executable and forced_limit_reason is None:
+                                actual_exit_date = pd.Timestamp(forced["date"])
+                                actual_exit_price = forced_price
+                                can_exit = True
+                                exit_label = "forced_delisting_exit"
+                                exit_block_reason = None
+                                forced_exit_symbols.add(symbol)
             if can_enter and not can_exit:
                 unresolved_exit[symbol] = exit_block_reason or "unresolved"
             forward_return = actual_exit_price / entry_price_value - 1.0 if can_exit else None
@@ -282,6 +331,7 @@ def run_backtest(
                     "entry_suspended": bool(entry_suspended.get(symbol, True)),
                     "entry_is_st": bool(entry_is_st.get(symbol, False)),
                     "entry_tradable": bool(entry_tradable.get(symbol, False)),
+                    "entry_borrowable": bool(entry_borrowable.get(symbol, True)),
                     "entry_limit_up": _optional_float(entry_limit_up, symbol),
                     "entry_limit_down": _optional_float(entry_limit_down, symbol),
                     "entry_block_reason": evidence.get(symbol, {}).get("entry_block_reason"),
@@ -289,6 +339,7 @@ def run_backtest(
                     "exit_suspended": bool(exit_suspended.get(symbol, True)),
                     "exit_is_st": bool(exit_is_st.get(symbol, False)),
                     "exit_tradable": bool(exit_tradable.get(symbol, False)),
+                    "exit_borrowable": bool(exit_borrowable.get(symbol, True)),
                     "exit_limit_up": _optional_float(exit_limit_up, symbol),
                     "exit_limit_down": _optional_float(exit_limit_down, symbol),
                     "exit_block_reason": evidence.get(symbol, {}).get("exit_block_reason"),
@@ -309,18 +360,22 @@ def run_backtest(
         ))
         forced_exit_notional = float(sum(
             abs(executed_weights[symbol] * (1.0 + float(evidence[symbol]["forward_return"])))
-            for symbol in forced_exit_symbols
+            for symbol in forced_exit_symbols | settlement_exit_symbols
         ))
         traded_notional += forced_exit_notional
         cost = float(cfg.cost_rate * traded_notional)
-        net_return = gross_return - cost
+        short_executed_notional = float(sum(
+            abs(weight) for weight in executed_weights.values() if weight < 0
+        ))
+        short_fee = float(cfg.short_fee_rate * (cfg.hold_days / 252.0) * short_executed_notional)
+        net_return = gross_return - cost - short_fee
         ending_nav = 1.0 + net_return
         if ending_nav <= 0:
             raise ValueError(f"portfolio NAV is non-positive on {exit_date.date()}")
         last_ending_positions = {
             symbol: weight * (1.0 + float(evidence[symbol]["forward_return"]))
             for symbol, weight in executed_weights.items()
-            if symbol not in forced_exit_symbols
+            if symbol not in forced_exit_symbols | settlement_exit_symbols
         }
         previous_drifted_weights = {
             symbol: value / ending_nav for symbol, value in last_ending_positions.items()
@@ -340,9 +395,11 @@ def run_backtest(
             "rank_ic_coverage": len(rank_sample) / len(scores),
             "rank_ic": rank_ic,
             "forced_delisting_exit_count": len(forced_exit_symbols),
+            "delisting_settlement_exit_count": len(settlement_exit_symbols),
             "gross_return": gross_return,
             "traded_notional": traded_notional,
             "cost": cost,
+            "short_fee": short_fee,
             "net_return": net_return,
         })
 
@@ -371,12 +428,15 @@ def run_backtest(
             "suspended_flag": "suspended" in provided_columns,
             "st_flag": "is_st" in provided_columns,
             "tradable_flag": "tradable" in provided_columns,
+            "borrowable_flag": "borrowable" in provided_columns,
+            "delisting_settlement_price": "delisting_settlement_price" in provided_columns,
             "trade_status": "trade_status" in provided_columns,
             "limit_prices": {"limit_up", "limit_down"}.issubset(provided_columns),
             "historical_name": "name" in provided_columns,
             "delisting_date": "de_listed_date" in provided_columns,
             "calendar_source": calendar_source or ("explicit" if calendar is not None else "panel_date_union"),
         },
+        "delisting_settlements": _delisting_settlements(work),
         "metrics": {
             **calculate_stats(net_returns, cfg.hold_days),
             "mean_rank_ic": float(np.mean(rank_ics)) if rank_ics else None,
@@ -384,6 +444,8 @@ def run_backtest(
             "average_forward_coverage": float(np.mean([p["forward_coverage"] for p in periods])),
             "average_rank_ic_coverage": float(np.mean([p["rank_ic_coverage"] for p in periods])),
             "forced_delisting_exits": int(sum(p["forced_delisting_exit_count"] for p in periods)),
+            "delisting_settlement_exits": int(sum(p["delisting_settlement_exit_count"] for p in periods)),
+            "total_short_fee": float(sum(p["short_fee"] for p in periods)),
         },
         "periods": periods,
         "limitations": [

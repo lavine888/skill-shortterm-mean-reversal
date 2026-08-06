@@ -7,9 +7,9 @@
 点时信号 · 漂移后换手 · PandaData · 可审计输出
 
 [![CI](https://github.com/lavine888/skill-shortterm-mean-reversal/actions/workflows/validate.yml/badge.svg)](https://github.com/lavine888/skill-shortterm-mean-reversal/actions/workflows/validate.yml)
-[![Version](https://img.shields.io/badge/version-0.7.0-2563EB)](./CHANGELOG.md)
-[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-47%20passed-2E7D32)](./tests)
+[![Version](https://img.shields.io/badge/version-2.0.0-2563EB)](./CHANGELOG.md)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Tests](https://img.shields.io/badge/tests-56%20passed-2E7D32)](./tests)
 [![PandaData](https://img.shields.io/badge/PandaData-0.0.12-0F766E)](./VALIDATION.md)
 [![License](https://img.shields.io/badge/license-GPL--3.0-4B5563)](./LICENSE)
 
@@ -34,7 +34,7 @@
 </tr>
 <tr>
 <td><strong>证据</strong><br>决策时点可见输入</td>
-<td><strong>会计</strong><br>按漂移权重计算换手</td>
+<td><strong>会计</strong><br>漂移权重换手 + 融券费</td>
 <td><strong>数据</strong><br>PandaData 或冻结面板</td>
 <td><strong>状态</strong><br>可运行 / 实验性</td>
 </tr>
@@ -52,9 +52,12 @@
 | 持有 | 从进场收盘持有至第五个市场交易日收盘 |
 | 调仓 | 每五个市场交易日；`rebalance_every == hold_days` |
 | 成本 | 权重漂移后，`cost_rate × 实际交易名义金额` |
+| 融券费 | 年化 `short_fee_rate`；period 按持有窗口、daily_nav 逐日计费 |
+| 可借券 | 可选 `borrowable` 点时列；不可借时阻断空头进场 |
+| 退市结算 | 可选 `delisting_settlement_price`；提供时按该价格结算 |
 | 缺失进场 | 不成交，资金保留为现金 |
 | 缺失退出 | 默认 fail-closed |
-| 退市 | 仅允许显式 `last_available_close` 策略 |
+| 退市 | 仅允许显式 `last_available_close` 策略或结算价 |
 
 ### 信号流程
 
@@ -83,8 +86,9 @@ flowchart LR
 <tr><td>完整非重叠期间</td><td><strong>48</strong></td></tr>
 <tr><td>远期收益覆盖率</td><td><strong>99.998%</strong></td></tr>
 <tr><td>Rank IC 覆盖率</td><td><strong>99.976%</strong></td></tr>
-<tr><td>本地测试</td><td><strong>47 passed</strong></td></tr>
+<tr><td>本地测试</td><td><strong>56 passed</strong></td></tr>
 <tr><td>0.7.0 全市场逐日检查点</td><td><strong>113 日 / 605 次受限退出尝试</strong></td></tr>
+<tr><td>2.0.0 demo 多年度 OOS（2021-2025）</td><td><strong>5 个年度全部正收益</strong></td></tr>
 </table>
 
 ### 2024 历史研究快照（schema 3）
@@ -127,6 +131,16 @@ python scripts/validate.py output/demo-daily.json
 ```
 
 Demo 使用确定性合成数据，只验证软件契约，不验证策略收益。
+
+### 1b. 多年度样本外验证（合成）
+
+```powershell
+python scripts/oos_validation.py --provider demo `
+  --start 20210101 --end 20251231 --accounting-mode daily_nav `
+  --output output/oos-demo-daily.json
+```
+
+把每个自然年作为时序样本外折逐年运行并输出确定性汇总 JSON。demo 折收益只验证软件契约；研究证据需对冻结多年度面板或 PandaData（带凭据）运行同一命令。
 
 ### 2. 运行真实 PandaData 截面
 
@@ -175,7 +189,7 @@ CSV 或 Parquet 必须包含：
 | `symbol` | 证券代码，例如 `600519.SH` |
 | `close` | 后复权收盘价 |
 
-可选点时字段为 `suspended`、`is_st`、`tradable`、`limit_up` 和 `limit_down`。布尔列只接受 `true/false`、`1/0`、`yes/no` 等明确值；非法价格、空代码、周末日期和冲突重复行会直接拒绝。
+可选点时字段为 `suspended`、`is_st`、`tradable`、`borrowable`、`limit_up` 和 `limit_down`。`borrowable` 控制空头可借状态；布尔列只接受 `true/false`、`1/0`、`yes/no` 等明确值。可选的证券级 `delisting_settlement_price` 与 `de_listed_date` 配对，提供退市结算价。非法价格、空代码、周末日期和冲突重复行会直接拒绝。
 
 ```powershell
 python scripts/backtest.py --provider file `
@@ -207,7 +221,7 @@ PandaData 模式默认使用并缓存官方 SH 交易日历；离线稀疏面板
 
 ```text
 lavine_reversal/     因子逻辑、数据规范化、回测会计、Provider、校验器
-scripts/             因子、回测、校验、汇总、发布打包入口
+scripts/             因子、回测、校验、汇总、样本外验证、发布打包入口
 tests/               点时、成交、退市、数据、缓存与契约测试
 references/          方法、数据契约和来源边界
 SKILL.md             Agent Skill 入口与 qsh-form
@@ -225,9 +239,10 @@ python scripts/package_release.py --destination dist
 ## 研究边界
 
 - A 股现金股票通常无法直接实现本诊断中的个股空头腿。
-- 尚未建模融券费、可借券数量、召回、涨跌停排队和盘中滑点。
-- `last_available_close` 只允许在最后报价日尝试退出，不会越过停牌或涨跌停限制；退市结算值仍是缺口。
+- 2.0.0 已建模融券费、可借券与退市结算价，但仍未建模融券召回、可借数量、涨跌停排队和盘中滑点；`borrowable` 与 `delisting_settlement_price` 是需要使用者来源并核验的数据输入。
+- `last_available_close` 只允许在最后报价日尝试退出，不会越过停牌或涨跌停限制；缺少可验证退市结算价时仍 fail-closed。
 - 计划信号批次不重叠；`daily_nav` 允许受限仓位跨批次延续，但不支持主动重叠 sleeve。
+- 多年度样本外入口（`scripts/oos_validation.py`）已就绪，demo 覆盖 2021-2025；真实全 A 股多年度运行仍需 PandaData 凭据。
 - 一年全市场结果不足以得出跨周期结论，仍需多年度和样本外验证。
 
 解读结果前，请阅读 [methodology.md](./references/methodology.md)、[data_guide.md](./references/data_guide.md) 和 [source_boundary.md](./references/source_boundary.md)。

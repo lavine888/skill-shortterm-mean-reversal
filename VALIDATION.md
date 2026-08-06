@@ -1,17 +1,25 @@
 # Q58 真实执行验证
 
-执行日期：2026-08-03
+执行日期：2026-08-06
 
-当前 Skill：0.7.0 / schema 7
+当前 Skill：2.0.0 / schema 8
 
-历史全市场基线：0.3.0 / schema 3；当前逐日执行复核：0.7.0 / schema 7
+历史全市场基线：0.3.0 / schema 3；当前逐日执行复核：0.7.0 / schema 7；2.0.0 建模复核：schema 8
 
 PandaData SDK：0.0.12
 
 ## 本地回归
 
-- `py -3.11 -m pytest -q`：47 passed。
+- `py -3.11 -m pytest -q`：56 passed。
 - Python 模块编译、元数据一致性、回测 JSON 和因子快照 JSON 均通过。
+
+## 2.0.0 模型回归
+
+- 融券费：period 与 daily_nav 两种模式均按配置收取并逐日记录，校验器独立重算 `short_fee`/`total_short_fee` 通过。
+- 可借券：`borrowable=False` 的空头进场被 `not_borrowable` 阻断，period 与 daily_nav 的 JSON 与证据校验均通过。
+- 退市结算价：提供 `delisting_settlement_price` 的持有窗口内退市仓位按该价格以 `delisting_settlement_exit` 结算，JSON、逐日账本与证据校验通过；未提供时 fail-closed 行为不变。
+- 多年度 OOS（demo 合成，2021-2025，daily_nav）：5 个年度全部正收益，输出通过确定性校验。demo 不构成收益证据。
+- 2.0.0 的新增字段（`borrowable`、`delisting_settlement_price`）纳入输入面板 SHA-256 与 `data_capabilities`。
 
 ## 0.4.0 请求缓存冒烟
 

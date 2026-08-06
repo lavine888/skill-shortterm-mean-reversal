@@ -14,6 +14,7 @@ class StrategyConfig:
     execution_lag: int = 1
     hold_days: int = 5
     cost_rate: float = 0.001
+    short_fee_rate: float = 0.0
     min_universe: int = 20
     delisting_exit_policy: str = "error"
 
@@ -22,7 +23,7 @@ class StrategyConfig:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, Integral) or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
-        for name in ("long_fraction", "short_fraction", "cost_rate"):
+        for name in ("long_fraction", "short_fraction", "cost_rate", "short_fee_rate"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(float(value)):
                 raise ValueError(f"{name} must be finite")
@@ -32,8 +33,8 @@ class StrategyConfig:
                 raise ValueError(f"{name} must be between 0 and 0.5")
         if self.long_fraction + self.short_fraction >= 1:
             raise ValueError("long and short fractions must not overlap")
-        if self.cost_rate < 0:
-            raise ValueError("cost_rate must be non-negative")
+        if self.cost_rate < 0 or self.short_fee_rate < 0:
+            raise ValueError("cost_rate and short_fee_rate must be non-negative")
         if self.rebalance_every != self.hold_days:
             raise ValueError("this non-overlapping engine requires rebalance_every == hold_days")
         if self.delisting_exit_policy not in {"error", "last_available_close"}:
